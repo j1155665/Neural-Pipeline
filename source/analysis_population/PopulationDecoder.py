@@ -262,7 +262,7 @@ class Defineparameters:
 
 class SlidingWindowDecoder:
     
-    def __init__(self, subject, date, save_dir=r'D:\Neural-Pipeline\results\analysis_population\decoders'):
+    def __init__(self, subject, date, save_dir=r'D:\Neural-Pipeline\results\analysis_population\decoders_partialregression'):
         self.subject = subject
         self.date = date
         self.save_dir = Path(save_dir)
@@ -277,6 +277,7 @@ class SlidingWindowDecoder:
         if not combined_filepath.exists():
             raise FileNotFoundError(f"File not found: {combined_filepath}")
         
+        # Load hyperparameters (we still need brain area and target to get n_neurons and n_valid_units)
         hyperparams = np.load(file_path, allow_pickle=True).item()
         self.all_hyperparams = hyperparams
         
@@ -296,51 +297,37 @@ class SlidingWindowDecoder:
         self.decode_target = decode_target
         self.n_neurons = params['n_neurons']
         self.n_valid_units = params['n_valid_units']
-        # self.best_params = params['best_params']
+        # self.best_params = params['best_params'] # not used for now, just use fixed hyperparam
 
 
         self.decoder_pipeline = Pipeline([
             ('scaler', StandardScaler()),
             ('classifier', LogisticRegression(
-                C=1,                    # Moderate regularization #when C is 1, the pattern is good but variation huge, 0.01 is too strong
+                C=0.1,                    # Moderate regularization #when C is 1, the pattern is good but variation huge, 0.01 is too strong
                 l1_ratio=0.5,            # Equal L1 and L2 penalty
                 penalty='elasticnet',     # Keep elasticnet
-                solver='saga',           # Keep saga
+                solver='saga',
+                multi_class='auto',           # Keep saga
                 random_state=42,
                 max_iter=1000,
                 class_weight='balanced'   # Keep balanced for class imbalance
             ))
         ])
 
-    def prepare_decoder_data_cv(self, spikes, behavior, decode_target, valid_units, 
-                            train_mod=3, train_coh=2, train_del=0, test_mod=3, test_coh=2, test_del=0,
-                            cv_indices=None, split='train'):
-        
+    def prepare_decoder_data(self, spikes, behavior, decode_target, valid_units, 
+                            trial_mod=3, trial_coh=2, trial_del=0):
         if valid_units is not None:
             spikes = spikes[valid_units, :]
-        
-        if split == 'train':
-            if isinstance(train_del, (list, np.ndarray)):
-                del_mask = np.isin(behavior['delta'], train_del)
-            else:
-                del_mask = (behavior['delta'] == train_del)
-            
-            mask = (behavior['modality'] == train_mod) & (behavior['coherenceInd'] == train_coh) & del_mask
+        if isinstance(trial_del, (list, np.ndarray)):
+            del_mask = np.isin(behavior['delta'], trial_del)
         else:
-            if isinstance(test_del, (list, np.ndarray)):
-                del_mask = np.isin(behavior['delta'], test_del)
-            else:
-                del_mask = (behavior['delta'] == test_del)
-            
-            mask = (behavior['modality'] == test_mod) & (behavior['coherenceInd'] == test_coh) & del_mask
-        
-        # Store original indices before any filtering
+            del_mask = (behavior['delta'] == trial_del)
+        mask = (behavior['modality'] == trial_mod) & (behavior['coherenceInd'] == trial_coh) & del_mask
+
         original_indices = np.where(mask)[0]
-        
-        filtered_spikes = spikes[:, mask]  
+        filtered_spikes = spikes[:, mask]
         filtered_behavior = {key: val[mask] for key, val in behavior.items()}
-        
-        # label it into 0 and 1 binary
+
         if decode_target == 'choice':
             y_all = filtered_behavior['choice'].astype(int) - 1
             target_mask = np.isin(y_all, [0, 1])
@@ -352,45 +339,94 @@ class SlidingWindowDecoder:
             y_all = np.zeros_like(stim_dirs, dtype=int)
             class_1_mask = np.isin(stim_dirs, [1, 2, 3])
             class_2_mask = np.isin(stim_dirs, [5, 6, 7])
+            zero_heading_mask = (filtered_behavior['headingInd'] == 4)
             y_all[class_1_mask] = 0
             y_all[class_2_mask] = 1
-            target_mask = class_1_mask | class_2_mask
-        
+            y_all[zero_heading_mask] = -1  # Mark zero heading trials as -1
+            target_mask = class_1_mask | class_2_mask | zero_heading_mask
+ 
+
         valid_spikes = filtered_spikes[:, target_mask]
         y_valid = y_all[target_mask]
-        
-        # Update original indices after target filtering
-        valid_original_indices = original_indices[target_mask]
-        
-        # Filter behavioral data for valid trials only
-        valid_behavior = {}
-        for key in ['choice', 'PDW', 'modality', 'headingInd', 'coherenceInd', 
-                    'goodtrial', 'deltaInd', 'correct', 'oneTargChoice', 'oneTargConf', 
-                    'heading', 'coherence', 'delta', 'RT']:
-            if key in filtered_behavior:
-                valid_behavior[key] = filtered_behavior[key][target_mask]
-        
+        final_original_indices = original_indices[target_mask]
+
+        valid_behavior = {key: filtered_behavior[key][target_mask] for key in [
+            'choice', 'PDW', 'modality', 'headingInd', 'coherenceInd', 
+            'goodtrial', 'deltaInd', 'correct', 'oneTargChoice', 'oneTargConf', 
+            'heading', 'coherence', 'delta', 'RT'] if key in filtered_behavior}
+
         if len(y_valid) == 0:
             return np.array([]), np.array([]), np.array([]), {}
+
+
+        return valid_spikes.T, y_valid, final_original_indices, valid_behavior
+    
+    def preprocess_spikes(self, train_spikes, test_spikes, decode_target, train_behaviors, test_behaviors, zero_trials_spikes, zero_trials_behaviors):
         
-        if cv_indices is not None:
-            trial_indices = cv_indices
-        else:
-            trial_indices = np.arange(len(y_valid))
+        # if decode_target in ['choice', 'PDW']:  
+        #     stim_dirs = train_behaviors['heading']
+            
+        #     # Fit regression using ONLY training data
+        #     X_design = np.column_stack([np.ones(len(stim_dirs)), stim_dirs])  # (n_train_trials, 2)
+        #     coeffs = np.linalg.lstsq(X_design, train_spikes, rcond=None)[0]  # (2, n_neurons)
+            
+        #     # Apply to training data
+        #     train_stim_pred = X_design @ coeffs  # (n_train_trials, n_neurons)
+            
+        #     # Apply SAME coefficients to test data
+        #     test_stim_dirs = test_behaviors['heading']
+        #     X_test_design = np.column_stack([np.ones(len(test_stim_dirs)), test_stim_dirs])  # (n_test_trials, 2)
+        #     test_stim_pred = X_test_design @ coeffs  # (n_test_trials, n_neurons)
+            
+        #     return (train_spikes - train_stim_pred), (test_spikes - test_stim_pred)
         
-        if len(trial_indices) == 0:
-            return np.array([]), np.array([]), np.array([]), {}
+        # elif decode_target == 'stimulus':
+        #     train_choices = (np.array(train_behaviors['choice']) - 1).astype(int)  # Convert 1,2 -> 0,1
+ 
+        #     X_design = np.column_stack([np.ones(len(train_choices)), train_choices])  # (n_train_trials, 2)
+        #     coeffs = np.linalg.lstsq(X_design, train_spikes, rcond=None)[0]  # (2, n_neurons)
+
+        #     train_choice_pred = X_design @ coeffs  # (n_train_trials, n_neurons)
+
+        #     test_choices = (np.array(test_behaviors['choice']) - 1).astype(int)  # Convert 1,2 -> 0,1
+        #     X_test_design = np.column_stack([np.ones(len(test_choices)), test_choices])  # (n_test_trials, 2)
+        #     test_choice_pred = X_test_design @ coeffs  # (n_test_trials, n_neurons)
+            
+        #     return (train_spikes - train_choice_pred), (test_spikes - test_choice_pred)
         
-        X = valid_spikes[:, trial_indices].T
-        y = y_valid[trial_indices]
+        # else:
+        #     return train_spikes, test_spikes
+
+            # Fit simultaneous model for both cases: neural_activity = β₀ + β₁×stimulus + β₂×choice
+        stim_dirs = train_behaviors['heading']
+        train_choices = (np.array(train_behaviors['choice']) - 1).astype(int)  # Convert 1,2 -> 0,1
         
-        # Get the actual original indices and behavioral data for these trials
-        final_original_indices = valid_original_indices[trial_indices]
-        final_behavior = {}
-        for key, values in valid_behavior.items():
-            final_behavior[key] = values[trial_indices]
+        X_design = np.column_stack([np.ones(len(stim_dirs)), stim_dirs, train_choices])  # (n_train_trials, 3)
+        coeffs = np.linalg.lstsq(X_design, train_spikes, rcond=None)[0]  # (3, n_neurons)
         
-        return X, y, final_original_indices, final_behavior
+        # Prepare test data
+        test_stim_dirs = test_behaviors['heading']
+        test_choices = (np.array(test_behaviors['choice']) - 1).astype(int)  # Convert 1,2 -> 0,1
+        
+        if decode_target in ['choice', 'PDW']:
+            # For choice decoding: regress out stimulus
+            regress_coeffs = coeffs[[0, 1], :]  # intercept + stimulus
+            X_train_regress = np.column_stack([np.ones(len(stim_dirs)), stim_dirs])
+            X_test_regress = np.column_stack([np.ones(len(test_stim_dirs)), test_stim_dirs])
+            
+        elif decode_target == 'stimulus':
+            # For stimulus decoding: regress out choice
+            regress_coeffs = coeffs[[0, 2], :]  # intercept + choice
+            X_train_regress = np.column_stack([np.ones(len(train_choices)), train_choices])
+            X_test_regress = np.column_stack([np.ones(len(test_choices)), test_choices])
+        
+        # Apply regression
+        train_regress_pred = X_train_regress @ regress_coeffs
+        test_regress_pred = X_test_regress @ regress_coeffs
+            
+        return (train_spikes - train_regress_pred), (test_spikes - test_regress_pred)
+
+    
 
     def run_decoding_analysis_cv(self, spikes_data, behavior_data, time_axes, area, target, 
                                 train_mod=3, train_coh=2, train_delta=0, test_mod=3, test_coh=2, test_delta=0,
@@ -406,215 +442,220 @@ class SlidingWindowDecoder:
         print(f"Decoding {target} in {area}")
         print(f"Condition: {condition_str} ({'same' if same_condition else 'cross'}-condition)")
         
-        all_alignment_results = {}
+        # Define training conditions for same_condition case
+        if same_condition:
+            if target == 'choice':
+                training_conditions = ['non_zero']  # Skip 'zero_only' due to insufficient data
+            elif target == 'PDW':
+                training_conditions = ['small_heading_single_target']
+            elif target == 'stimulus':
+                training_conditions = ['correct_non_zero']
+        else:
+            training_conditions = ['original']  # Keep original behavior for cross-condition
         
-        for alignment in ['stimOn', 'saccOnset', 'postTargHold']:
-            print(f"\n  Processing alignment: {alignment}")
+        # Store all results for different training conditions
+        all_training_results = {}
+        
+        # Loop through training conditions
+        for train_condition in training_conditions:
+            print(f"\n=== Running training condition: {train_condition} ===")
             
-            spikes = spikes_data[alignment]
-            all_results = []
-            all_coefficients = []
+            all_alignment_results = {}
             
-            if same_condition:
-                dummy_X, dummy_y, _, _ = self.prepare_decoder_data_cv(
-                    spikes[:, :, 0], behavior_data, target, valid_units,
-                    train_mod=train_mod, train_coh=train_coh, train_del=train_delta,
-                    test_mod=test_mod, test_coh=test_coh, test_del=test_delta,
-                    cv_indices=None, split='train'
-                )
+            # Loop through alignments
+            for alignment in ['stimOn', 'saccOnset', 'postTargHold']:
+                print(f"\n  Processing alignment: {alignment}")
                 
-                if len(dummy_y) == 0 or len(np.unique(dummy_y)) < 2:
-                    print(f"    Skipping {alignment}: insufficient data or classes")
-                    continue
-                
+                spikes = spikes_data[alignment]
+                all_results = []
+                all_coefficients = []    
                 skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
-                cv_splits = list(skf.split(dummy_X, dummy_y))
-            
-            for t in range(spikes.shape[2]):  
-                spikes_time = spikes[:, :, t]
-                time_results = []
-                time_coefficients = []
+                
+                # Loop through time points
+                for t in range(spikes.shape[2]):  
+                    spikes_time = spikes[:, :, t]
+                    time_results = []
+                    time_coefficients = []
 
-                for cv_fold in range(n_folds):
-                    np.random.seed(42 + cv_fold)
-                    
-                    if valid_units is not None:
-                        unit_indices = np.where(valid_units)[0] 
-                    else:
-                        unit_indices = np.arange(spikes.shape[0])  
-                    
-                    selected_indices = np.random.choice(
-                        unit_indices, 
-                        size=min(config['n_valid_units'], len(unit_indices)), 
-                        replace=False
-                    )
-
-                    final_units = np.zeros(spikes.shape[0], dtype=bool)
-                    final_units[selected_indices] = True
-
-                    if same_condition:
-                        train_idx, test_idx = cv_splits[cv_fold]
+                    # Loop through CV folds
+                    for cv_fold in range(n_folds):
+                        np.random.seed(42 + cv_fold)
                         
-                        X_train, y_train, train_original_indices, train_behavior = self.prepare_decoder_data_cv(
-                            spikes_time, behavior_data, target, final_units,
-                            train_mod=train_mod, train_coh=train_coh, train_del=train_delta,
-                            test_mod=test_mod, test_coh=test_coh, test_del=test_delta,
-                            cv_indices=train_idx, split='train'
-                        )
+                        if valid_units is not None:
+                            unit_indices = np.where(valid_units)[0] 
+                        else:
+                            unit_indices = np.arange(spikes.shape[0])  
                         
-                        X_test, y_test, test_original_indices, test_behavior = self.prepare_decoder_data_cv(
-                            spikes_time, behavior_data, target, final_units,
-                            train_mod=train_mod, train_coh=train_coh, train_del=train_delta,
-                            test_mod=test_mod, test_coh=test_coh, test_del=test_delta,
-                            cv_indices=test_idx, split='test'
+                        selected_indices = np.random.choice(
+                            unit_indices, 
+                            size=min(config['n_valid_units'], len(unit_indices)), 
+                            replace=False
                         )
-                    else:
-                        train_X_full, train_y_full, _, _ = self.prepare_decoder_data_cv(
-                            spikes_time, behavior_data, target, final_units,
-                            train_mod=train_mod, train_coh=train_coh, train_del=train_delta,
-                            test_mod=train_mod, test_coh=train_coh, test_del=train_delta,
-                            cv_indices=None, split='train'
-                        )
+
+                        final_units = np.zeros(spikes.shape[0], dtype=bool)
+                        final_units[selected_indices] = True
+
+                        train_X_full, train_y_full, original_indices_full, behavior_full = self.prepare_decoder_data(
+                                spikes_time, behavior_data, target, final_units,
+                                trial_mod=train_mod, trial_coh=train_coh, trial_del=train_delta
+                            )
+
                         
                         if len(train_y_full) == 0 or len(np.unique(train_y_full)) < 2:
                             continue
-                        
-                        skf_train = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=42)
-                        train_splits = list(skf_train.split(train_X_full, train_y_full))
-                        train_idx, _ = train_splits[cv_fold]
-                        
-                        X_train, y_train, train_original_indices, train_behavior = self.prepare_decoder_data_cv(
-                            spikes_time, behavior_data, target, final_units,
-                            train_mod=train_mod, train_coh=train_coh, train_del=train_delta,
-                            test_mod=train_mod, test_coh=train_coh, test_del=train_delta,
-                            cv_indices=train_idx, split='train'
-                        )
-                        
-                        X_test, y_test, test_original_indices, test_behavior = self.prepare_decoder_data_cv(
-                            spikes_time, behavior_data, target, final_units,
-                            train_mod=test_mod, train_coh=test_coh, train_del=test_delta,
-                            test_mod=test_mod, test_coh=test_coh, test_del=test_delta,
-                            cv_indices=None, split='test'
-                        )
-                    
-                    if len(X_train) == 0 or len(X_test) == 0:
-                        continue
-                    
-                    unique_train = np.unique(y_train)
-                    unique_test = np.unique(y_test)
-                    if len(unique_train) < 2 or len(unique_test) < 2:
-                        continue
-                    
-                    self.decoder_pipeline.fit(X_train, y_train)
-                    
-                    y_proba = self.decoder_pipeline.predict_proba(X_test)[:, 1]
-                    y_pred = self.decoder_pipeline.predict(X_test)
-                    
-                    accuracy = np.mean(y_pred == y_test)
-                    auc = roc_auc_score(y_test, y_proba)
-                    
-                    classifier_coef = self.decoder_pipeline.named_steps['classifier'].coef_[0]
-                    full_coefficients = np.zeros(spikes.shape[0])
-                    full_coefficients[selected_indices] = classifier_coef
-                    
-                    # Enhanced trial results with all behavioral conditions
-                    trial_results = {
-                        'time': t,
-                        'cv_fold': cv_fold,
-                        'y_proba': y_proba,
-                        'y_pred': y_pred,
-                        'y_test': y_test,
-                        'accuracy': accuracy,
-                        'auc': auc,
-                        'selected_units': selected_indices,
-                        'coefficients': full_coefficients,
-                        'n_train': len(X_train),
-                        'n_test': len(X_test),
-                        
-                        # NEW: Add trial indices
-                        'train_indices': train_original_indices,
-                        'test_indices': test_original_indices,
-                        
-                        # NEW: Add all behavioral conditions for test trials
-                        'test_behavior': {
-                            'choice': test_behavior['choice'],
-                            'PDW': test_behavior['PDW'], 
-                            'modality': test_behavior['modality'],
-                            'headingInd': test_behavior['headingInd'],
-                            'coherenceInd': test_behavior['coherenceInd'],
-                            'goodtrial': test_behavior['goodtrial'],
-                            'deltaInd': test_behavior['deltaInd'],
-                            'correct': test_behavior['correct'],
-                            'oneTargChoice': test_behavior['oneTargChoice'],
-                            'oneTargConf': test_behavior['oneTargConf'],
-                            'heading': test_behavior['heading'],
-                            'coherence': test_behavior['coherence'],
-                            'delta': test_behavior['delta'],
-                            'RT': test_behavior['RT']
-                        },
-                        
-                        # NEW: Add training conditions for reference
-                        'train_behavior': {
-                            'choice': train_behavior['choice'],
-                            'PDW': train_behavior['PDW'],
-                            'modality': train_behavior['modality'],
-                            'headingInd': train_behavior['headingInd'],
-                            'coherenceInd': train_behavior['coherenceInd'],
-                            'goodtrial': train_behavior['goodtrial'],
-                            'deltaInd': train_behavior['deltaInd'],
-                            'correct': train_behavior['correct'],
-                            'oneTargChoice': train_behavior['oneTargChoice'],
-                            'oneTargConf': train_behavior['oneTargConf'],
-                            'heading': train_behavior['heading'],
-                            'coherence': train_behavior['coherence'],
-                            'delta': train_behavior['delta'],
-                            'RT': train_behavior['RT']
-                        }
-                    }
-                    
-                    time_results.append(trial_results)
-                    time_coefficients.append(full_coefficients)
-                
-                all_results.extend(time_results)
-                if time_coefficients:
-                    all_coefficients.append(time_coefficients)
-            
-            if all_coefficients:
-                all_coefficients = np.array(all_coefficients)
-                coeff_mean = np.mean(all_coefficients, axis=1)
-                coeff_std = np.std(all_coefficients, axis=1)
-            else:
-                coeff_mean = np.array([])
-                coeff_std = np.array([])
-            
-            alignment_results = {
-                'trial_results': all_results,
-                'coefficients_mean': coeff_mean,
-                'coefficients_std': coeff_std,
-                'time_axes': time_axes,
-                'config': config,
-                'area': area,
-                'target': target,
-                'alignment': alignment,
-                'train_mod': train_mod,
-                'train_coh': train_coh,
-                'test_mod': test_mod,
-                'test_coh': test_coh,
-                'n_folds': n_folds
-            }
-            
-            all_alignment_results[alignment] = alignment_results
-            
-            if save_results:
-                self.save_results_cv(alignment_results, area, target, alignment, 
-                                    train_mod, train_coh, test_mod, test_coh)
-        
-        return all_alignment_results
 
-    def save_results_cv(self, results, area, target, alignment, train_mod, train_coh, test_mod, test_coh):
-        """Save cross-validation results"""
+                        train_idxs, test_idxs = list(skf.split(train_X_full, train_y_full))[cv_fold]
+                        
+                        # Define masks
+                        non_zero_mask = np.isin(behavior_full['headingInd'], [1,2,3,5,6,7])
+                        small_heading_mask = np.isin(behavior_full['headingInd'], [2,3,5,6])
+                        correct_mask = behavior_full['correct'] == 1
+                        zero_mask = behavior_full['headingInd'] == 4
+                        
+                        if same_condition:
+                            # Apply training condition-specific masking
+                            if train_condition == 'non_zero':
+                                valid_train_mask = non_zero_mask[train_idxs]
+                                train_idxs_filtered = train_idxs[valid_train_mask]
+                            elif train_condition == 'small_heading_single_target':
+                                # For PDW: small heading AND single target (oneTargConf == 0)
+                                single_target_mask = behavior_full['oneTargConf'] == 0
+                                valid_train_mask = (small_heading_mask & single_target_mask)[train_idxs]
+                                train_idxs_filtered = train_idxs[valid_train_mask]
+                            elif train_condition == 'correct_non_zero':
+                                # valid_train_mask = (correct_mask & non_zero_mask)[train_idxs]
+                                valid_train_mask =  non_zero_mask[train_idxs]
+                                train_idxs_filtered = train_idxs[valid_train_mask]
+
+                            else:
+                                train_idxs_filtered = train_idxs
+                            
+                            # Check for minimum training data
+                            if len(train_idxs_filtered) < 10:
+                                print(f"Insufficient training data for {train_condition} ({len(train_idxs_filtered)} samples), skipping")
+                                continue
+
+                            test_idxs_filtered = ~train_idxs_filtered
+                            
+                            # Test on all trials (no masking for test set)
+                            X_train = train_X_full[train_idxs_filtered]
+                            y_train = train_y_full[train_idxs_filtered]
+                            train_original_indices = original_indices_full[train_idxs_filtered]
+                            train_behavior = {key: behavior_full[key][train_idxs_filtered] for key in behavior_full}
+                            
+                            X_test = train_X_full[test_idxs_filtered]
+                            y_test = train_y_full[test_idxs_filtered]
+                            test_original_indices = original_indices_full[test_idxs_filtered]
+                            test_behavior = {key: behavior_full[key][test_idxs_filtered] for key in behavior_full}
+
+                            X_zero = train_X_full[zero_mask]
+                            zero_behavior = {key: behavior_full[key][zero_mask] for key in behavior_full}
+
+                            X_train, X_test = self.preprocess_spikes(X_train, X_test, target, train_behavior, test_behavior, X_zero, zero_behavior)
+
+                        else:
+                            # Original cross-condition logic
+                            X_train = train_X_full[train_idxs]
+                            y_train = train_y_full[train_idxs]
+                            train_original_indices = original_indices_full[train_idxs]
+                            train_behavior = {key: behavior_full[key][train_idxs] for key in behavior_full}
+                            
+                            X_test, y_test, test_original_indices, test_behavior = self.prepare_decoder_data(
+                                spikes_time, behavior_data, target, final_units,
+                                trial_mod=test_mod, trial_coh=test_coh, trial_del=test_delta
+                            )
+                            X_train, X_test = self.preprocess_spikes(X_train, X_test, target, train_behavior, test_behavior, X_zero, zero_behavior)
+                        
+                        if len(X_train) == 0 or len(X_test) == 0:
+                            continue
+                        
+                        unique_train = np.unique(y_train)
+                        unique_test = np.unique(y_test)
+                        if len(unique_train) < 2 or len(unique_test) < 2:
+                            continue
+                        
+                        self.decoder_pipeline.fit(X_train, y_train)
+                        y_proba = self.decoder_pipeline.predict_proba(X_test)[:, 1]
+                        y_pred = self.decoder_pipeline.predict(X_test)
+                        
+                        y_test_valid = y_test[np.isin(y_test, [0, 1])]
+                        y_proba_valid = y_proba[np.isin(y_test, [0, 1])]
+                        y_pred_valid = y_pred[np.isin(y_test, [0, 1])]
+
+                        accuracy = np.mean(y_pred_valid == y_test_valid)
+                        auc = roc_auc_score(y_test_valid, y_proba_valid)
+                        
+                        classifier_coef = self.decoder_pipeline.named_steps['classifier'].coef_[0]
+                        full_coefficients = np.zeros(spikes.shape[0])
+                        full_coefficients[selected_indices] = classifier_coef
+                        
+                        # Trial results
+                        trial_results = {
+                            'time': t,
+                            'cv_fold': cv_fold,
+                            'y_proba': y_proba,
+                            'y_pred': y_pred,
+                            'y_test': y_test,
+                            'accuracy': accuracy,
+                            'auc': auc,
+                            'selected_units': selected_indices,
+                            'coefficients': full_coefficients,
+                            'n_train': len(X_train),
+                            'n_test': len(X_test),
+                            'train_condition': train_condition,
+                            'train_indices': train_original_indices,
+                            'test_indices': test_original_indices,
+                            'test_behavior': {key: test_behavior[key] for key in test_behavior},
+                            'train_behavior': {key: train_behavior[key] for key in train_behavior}
+                        }
+                        
+                        time_results.append(trial_results)
+                        time_coefficients.append(full_coefficients)
+                    
+                    all_results.extend(time_results)
+                    if time_coefficients:
+                        all_coefficients.append(time_coefficients)
+                
+                if all_coefficients:
+                    all_coefficients = np.array(all_coefficients)
+                    coeff_mean = np.mean(all_coefficients, axis=1)
+                    coeff_std = np.std(all_coefficients, axis=1)
+                else:
+                    coeff_mean = np.array([])
+                    coeff_std = np.array([])
+                
+                alignment_results = {
+                    'trial_results': all_results,
+                    'coefficients_mean': coeff_mean,
+                    'coefficients_std': coeff_std,
+                    'time_axes': time_axes,
+                    'config': config,
+                    'area': area,
+                    'target': target,
+                    'alignment': alignment,
+                    'train_mod': train_mod,
+                    'train_coh': train_coh,
+                    'test_mod': test_mod,
+                    'test_coh': test_coh,
+                    'n_folds': n_folds,
+                    'train_condition': train_condition
+                }
+                
+                all_alignment_results[alignment] = alignment_results
+                
+                if save_results:
+                    self.save_results_cv(alignment_results, area, target, alignment, 
+                                        train_mod, train_coh, test_mod, test_coh, train_condition)
+            
+            all_training_results[train_condition] = all_alignment_results
         
-        filename = f"{self.subject}_{self.date}_{area}_{target}_{alignment}_train_mod{train_mod}_coh{train_coh}_test_mod{test_mod}_coh{test_coh}_cv_results.npy"
+        return all_training_results
+
+    def save_results_cv(self, results, area, target, alignment, train_mod, train_coh, test_mod, test_coh, train_condition='original'):
+        """Save cross-validation results with training condition in filename"""
+        
+        # Include train_condition in filename to distinguish different training conditions
+        filename = f"{self.subject}_{self.date}_{area}_{target}_{alignment}_train_mod{train_mod}_coh{train_coh}_test_mod{test_mod}_coh{test_coh}_{train_condition}_cv_results.npy"
         filepath = self.save_dir / filename
         
         save_data = {
@@ -627,6 +668,7 @@ class SlidingWindowDecoder:
             'train_coh': train_coh,
             'test_mod': test_mod,
             'test_coh': test_coh,
+            'train_condition': train_condition,
             'trial_results': results['trial_results'],
             'coefficients_mean': results['coefficients_mean'],
             'coefficients_std': results['coefficients_std'],
