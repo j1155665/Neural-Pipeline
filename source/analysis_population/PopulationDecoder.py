@@ -120,14 +120,23 @@ class Defineparameters:
         return X, y, np.sum(target_mask)
     
     def train_decoder_with_cv(self, X, y):
+        # param_grid = {
+        #     'classifier__penalty': ['elasticnet'],  
+        #     'classifier__C': [0.001, 0.01, 0.1, 1, 10, 100, 1000],
+        #     'classifier__solver': ['saga'], 
+        #     'classifier__l1_ratio': [0, 0.2, 0.4, 0.6, 0.8, 1.0],
+        #     'classifier__class_weight': [
+        #         None, 'balanced', 
+        #         {0: 0.2, 1: 0.8}, {0: 0.5, 1: 0.5}, {0: 0.8, 1: 0.2}
+        #     ]
+        # }
         param_grid = {
             'classifier__penalty': ['elasticnet'],  
-            'classifier__C': [0.001, 0.01, 0.1, 1, 10, 100, 1000],
+            'classifier__C': [0.1],
             'classifier__solver': ['saga'], 
-            'classifier__l1_ratio': [0, 0.2, 0.4, 0.6, 0.8, 1.0],
+            'classifier__l1_ratio': [0.5],
             'classifier__class_weight': [
-                None, 'balanced', 
-                {0: 0.2, 1: 0.8}, {0: 0.5, 1: 0.5}, {0: 0.8, 1: 0.2}
+                None
             ]
         }
         
@@ -262,12 +271,23 @@ class Defineparameters:
 
 class SlidingWindowDecoder:
     
-    def __init__(self, subject, date, save_dir=r'D:\Neural-Pipeline\results\analysis_population\decoders_partialregression'):
+    def __init__(self, subject, date, partial_regress=True, 
+                run_permutation_test=False, n_permutations=100):
         self.subject = subject
         self.date = date
-        self.save_dir = Path(save_dir)
+        self.partial_regress = partial_regress
+        
+        # Determine regression type based on partial_regress value
+        if partial_regress:
+            regress = 'partialregress'
+        else:
+            regress = 'noregress'
+        
+        self.regress = regress
+        self.save_dir = Path(os.path.join(r'D:\Neural-Pipeline\results\analysis_population', f'decoders_{regress}'))
         self.save_dir.mkdir(parents=True, exist_ok=True)
-        self.n_reps = 1  # Add default n_reps
+        self.run_permutation_test = run_permutation_test #self.partial_regress = partial_regress
+        self.n_permutations = n_permutations
         self.setup_decoder()
 
     def setup_decoder(self, brain_area=None, decode_target=None): # for now, just use fixed hyperparam, but still load it to get brain info
@@ -296,16 +316,28 @@ class SlidingWindowDecoder:
         self.brain_area = brain_area
         self.decode_target = decode_target
         self.n_neurons = params['n_neurons']
-        self.n_valid_units = params['n_valid_units']
         # self.best_params = params['best_params'] # not used for now, just use fixed hyperparam
 
 
+        # self.decoder_pipeline = Pipeline([
+        #     ('scaler', StandardScaler()),
+        #     ('classifier', LogisticRegression(
+        #         C=0.1,                    # Moderate regularization #when C is 1, the pattern is good but variation huge, 0.01 is too strong
+        #         l1_ratio=0.2,            # Equal L1 and L2 penalty
+        #         penalty='elasticnet',     # Keep elasticnet
+        #         solver='saga',
+        #         multi_class='auto',           # Keep saga
+        #         random_state=42,
+        #         max_iter=1000,
+        #         class_weight='balanced'   # Keep balanced for class imbalance
+        #     ))
+        # ])
+        
         self.decoder_pipeline = Pipeline([
             ('scaler', StandardScaler()),
             ('classifier', LogisticRegression(
                 C=0.1,                    # Moderate regularization #when C is 1, the pattern is good but variation huge, 0.01 is too strong
-                l1_ratio=0.5,            # Equal L1 and L2 penalty
-                penalty='elasticnet',     # Keep elasticnet
+                penalty='l1',    
                 solver='saga',
                 multi_class='auto',           # Keep saga
                 random_state=42,
@@ -313,6 +345,7 @@ class SlidingWindowDecoder:
                 class_weight='balanced'   # Keep balanced for class imbalance
             ))
         ])
+
 
     def prepare_decoder_data(self, spikes, behavior, decode_target, valid_units, 
                             trial_mod=3, trial_coh=2, trial_del=0):
@@ -362,42 +395,7 @@ class SlidingWindowDecoder:
         return valid_spikes.T, y_valid, final_original_indices, valid_behavior
     
     def preprocess_spikes(self, train_spikes, test_spikes, decode_target, train_behaviors, test_behaviors, zero_trials_spikes, zero_trials_behaviors):
-        
-        # if decode_target in ['choice', 'PDW']:  
-        #     stim_dirs = train_behaviors['heading']
-            
-        #     # Fit regression using ONLY training data
-        #     X_design = np.column_stack([np.ones(len(stim_dirs)), stim_dirs])  # (n_train_trials, 2)
-        #     coeffs = np.linalg.lstsq(X_design, train_spikes, rcond=None)[0]  # (2, n_neurons)
-            
-        #     # Apply to training data
-        #     train_stim_pred = X_design @ coeffs  # (n_train_trials, n_neurons)
-            
-        #     # Apply SAME coefficients to test data
-        #     test_stim_dirs = test_behaviors['heading']
-        #     X_test_design = np.column_stack([np.ones(len(test_stim_dirs)), test_stim_dirs])  # (n_test_trials, 2)
-        #     test_stim_pred = X_test_design @ coeffs  # (n_test_trials, n_neurons)
-            
-        #     return (train_spikes - train_stim_pred), (test_spikes - test_stim_pred)
-        
-        # elif decode_target == 'stimulus':
-        #     train_choices = (np.array(train_behaviors['choice']) - 1).astype(int)  # Convert 1,2 -> 0,1
- 
-        #     X_design = np.column_stack([np.ones(len(train_choices)), train_choices])  # (n_train_trials, 2)
-        #     coeffs = np.linalg.lstsq(X_design, train_spikes, rcond=None)[0]  # (2, n_neurons)
 
-        #     train_choice_pred = X_design @ coeffs  # (n_train_trials, n_neurons)
-
-        #     test_choices = (np.array(test_behaviors['choice']) - 1).astype(int)  # Convert 1,2 -> 0,1
-        #     X_test_design = np.column_stack([np.ones(len(test_choices)), test_choices])  # (n_test_trials, 2)
-        #     test_choice_pred = X_test_design @ coeffs  # (n_test_trials, n_neurons)
-            
-        #     return (train_spikes - train_choice_pred), (test_spikes - test_choice_pred)
-        
-        # else:
-        #     return train_spikes, test_spikes
-
-            # Fit simultaneous model for both cases: neural_activity = β₀ + β₁×stimulus + β₂×choice
         stim_dirs = train_behaviors['heading']
         train_choices = (np.array(train_behaviors['choice']) - 1).astype(int)  # Convert 1,2 -> 0,1
         
@@ -426,7 +424,127 @@ class SlidingWindowDecoder:
             
         return (train_spikes - train_regress_pred), (test_spikes - test_regress_pred)
 
-    
+    def permutation_test_by_heading(self, X_train, y_train, X_test, y_test, test_behavior, 
+                               y_proba_true=None, y_pred_true=None,
+                                n_permutations=100, random_state=42):
+        
+        # Get unique headings in test set
+        test_headings = test_behavior['headingInd']
+        unique_headings = np.unique(test_headings)
+        if n_permutations is None:
+            n_permutations = self.n_permutations
+
+        # First, get predictions with true labels
+        if y_proba_true is None or y_pred_true is None:
+            self.decoder_pipeline.fit(X_train, y_train)
+            y_proba_true = self.decoder_pipeline.predict_proba(X_test)[:, 1]
+            y_pred_true = self.decoder_pipeline.predict(X_test)
+        
+        # Initialize results storage
+        heading_results = {}
+        
+        # Calculate true performance for overall and each heading
+        overall_valid_mask = np.isin(y_test, [0, 1])
+        
+        if np.any(overall_valid_mask):
+            y_test_overall = y_test[overall_valid_mask]
+            y_proba_true_overall = y_proba_true[overall_valid_mask]
+            y_pred_true_overall = y_pred_true[overall_valid_mask]
+            
+            overall_true_accuracy = np.mean(y_pred_true_overall == y_test_overall)
+            overall_true_auc = roc_auc_score(y_test_overall, y_proba_true_overall) if len(np.unique(y_test_overall)) > 1 else 0.5
+            
+            # Initialize storage for permutation results
+            heading_results['All'] = {
+                    'true_accuracy': overall_true_accuracy,  # ADD THIS
+                    'true_auc': overall_true_auc,           # ADD THIS
+                    'perm_accuracies': [],
+                    'perm_aucs': [],
+                }
+        
+        # Calculate true performance for each heading
+        for heading in unique_headings:
+            heading_mask = test_headings == heading
+            valid_mask = heading_mask & np.isin(y_test, [0, 1])
+            
+            if not np.any(valid_mask):
+                continue
+                
+            y_test_heading = y_test[valid_mask]
+            y_proba_true_heading = y_proba_true[valid_mask]
+            y_pred_true_heading = y_pred_true[valid_mask]
+            
+            true_accuracy = np.mean(y_pred_true_heading == y_test_heading)
+            true_auc = roc_auc_score(y_test_heading, y_proba_true_heading) if len(np.unique(y_test_heading)) > 1 else 0.5
+            
+            heading_results[heading] = {
+                    'true_accuracy': true_accuracy,  # ADD THIS
+                    'true_auc': true_auc,           # ADD THIS
+                    'perm_accuracies': [],
+                    'perm_aucs': [],
+                    'valid_mask': valid_mask  # Store for later use
+                }
+        
+        # Perform permutations (train once, evaluate for all headings)
+        rng = np.random.RandomState(random_state)
+        
+        for i in range(n_permutations):
+            # Shuffle training labels
+            if i % 10 == 0:
+                print(f"    Processing permutation {i}/{n_permutations}")
+
+            y_train_perm = rng.permutation(y_train)
+            
+            # Train model with permuted labels ONCE
+            self.decoder_pipeline.fit(X_train, y_train_perm)
+            y_proba_perm = self.decoder_pipeline.predict_proba(X_test)[:, 1]
+            y_pred_perm = self.decoder_pipeline.predict(X_test)
+            
+            # Evaluate for overall
+            if 'All' in heading_results:
+                y_proba_perm_overall = y_proba_perm[overall_valid_mask]
+                y_pred_perm_overall = y_pred_perm[overall_valid_mask]
+                
+                perm_accuracy = np.mean(y_pred_perm_overall == y_test_overall)
+                perm_auc = roc_auc_score(y_test_overall, y_proba_perm_overall) if len(np.unique(y_test_overall)) > 1 else 0.5
+                
+                heading_results['All']['perm_accuracies'].append(perm_accuracy)
+                heading_results['All']['perm_aucs'].append(perm_auc)
+            
+            # Evaluate for each heading
+            for heading in unique_headings:
+                if heading not in heading_results:
+                    continue
+                    
+                valid_mask = heading_results[heading]['valid_mask']
+                y_test_heading = y_test[valid_mask]
+                y_proba_perm_heading = y_proba_perm[valid_mask]
+                y_pred_perm_heading = y_pred_perm[valid_mask]
+                
+                perm_accuracy = np.mean(y_pred_perm_heading == y_test_heading)
+                perm_auc = roc_auc_score(y_test_heading, y_proba_perm_heading) if len(np.unique(y_test_heading)) > 1 else 0.5
+                
+                heading_results[heading]['perm_accuracies'].append(perm_accuracy)
+                heading_results[heading]['perm_aucs'].append(perm_auc)
+        
+        # Convert lists to arrays and calculate p-values
+        for key in heading_results:
+            heading_results[key]['perm_accuracies'] = np.array(heading_results[key]['perm_accuracies'])
+            heading_results[key]['perm_aucs'] = np.array(heading_results[key]['perm_aucs'])
+            
+            # Calculate p-values
+            heading_results[key]['p_value_accuracy'] = np.mean(
+                heading_results[key]['perm_accuracies'] >= heading_results[key]['true_accuracy']
+            )
+            heading_results[key]['p_value_auc'] = np.mean(
+                heading_results[key]['perm_aucs'] >= heading_results[key]['true_auc']
+            )
+            
+            # Remove the temporary valid_mask
+            if 'valid_mask' in heading_results[key]:
+                del heading_results[key]['valid_mask']
+        
+        return heading_results
 
     def run_decoding_analysis_cv(self, spikes_data, behavior_data, time_axes, area, target, 
                                 train_mod=3, train_coh=2, train_delta=0, test_mod=3, test_coh=2, test_delta=0,
@@ -445,13 +563,13 @@ class SlidingWindowDecoder:
         # Define training conditions for same_condition case
         if same_condition:
             if target == 'choice':
-                training_conditions = ['non_zero']  # Skip 'zero_only' due to insufficient data
+                training_conditions = ['non_zero']
             elif target == 'PDW':
                 training_conditions = ['small_heading_single_target']
             elif target == 'stimulus':
                 training_conditions = ['correct_non_zero']
         else:
-            training_conditions = ['original']  # Keep original behavior for cross-condition
+            training_conditions = ['original']
         
         # Store all results for different training conditions
         all_training_results = {}
@@ -481,26 +599,31 @@ class SlidingWindowDecoder:
                     for cv_fold in range(n_folds):
                         np.random.seed(42 + cv_fold)
                         
+                        # ✅ Fixed unit selection logic
                         if valid_units is not None:
-                            unit_indices = np.where(valid_units)[0] 
+                            # Convert boolean mask to indices if needed
+                            if valid_units.dtype == bool:
+                                selected_unit_indices = np.where(valid_units)[0]
+                                print(f"Selected {len(selected_unit_indices)} / {np.sum(valid_units)}units for {area}")
+                            else:
+                                selected_unit_indices = valid_units
+                                print(f"Selected {len(selected_unit_indices)} / {len(valid_units)}units for {area}")
+                            # Create boolean mask for prepare_decoder_data
+                            final_units = np.zeros(spikes.shape[0], dtype=bool)
+                            final_units[selected_unit_indices] = True
                         else:
-                            unit_indices = np.arange(spikes.shape[0])  
+                            # Use all units
+                            selected_unit_indices = np.arange(spikes.shape[0])
+                            final_units = None
                         
-                        selected_indices = np.random.choice(
-                            unit_indices, 
-                            size=min(config['n_valid_units'], len(unit_indices)), 
-                            replace=False
-                        )
-
-                        final_units = np.zeros(spikes.shape[0], dtype=bool)
-                        final_units[selected_indices] = True
+                        # Debug print
+                        
 
                         train_X_full, train_y_full, original_indices_full, behavior_full = self.prepare_decoder_data(
                                 spikes_time, behavior_data, target, final_units,
                                 trial_mod=train_mod, trial_coh=train_coh, trial_del=train_delta
                             )
 
-                        
                         if len(train_y_full) == 0 or len(np.unique(train_y_full)) < 2:
                             continue
 
@@ -511,6 +634,10 @@ class SlidingWindowDecoder:
                         small_heading_mask = np.isin(behavior_full['headingInd'], [2,3,5,6])
                         correct_mask = behavior_full['correct'] == 1
                         zero_mask = behavior_full['headingInd'] == 4
+                        
+                        # ✅ Fixed X_zero definition for both conditions
+                        X_zero = train_X_full[zero_mask] if np.any(zero_mask) else np.array([]).reshape(0, train_X_full.shape[1])
+                        zero_behavior = {key: behavior_full[key][zero_mask] for key in behavior_full} if np.any(zero_mask) else {}
                         
                         if same_condition:
                             # Apply training condition-specific masking
@@ -523,10 +650,8 @@ class SlidingWindowDecoder:
                                 valid_train_mask = (small_heading_mask & single_target_mask)[train_idxs]
                                 train_idxs_filtered = train_idxs[valid_train_mask]
                             elif train_condition == 'correct_non_zero':
-                                # valid_train_mask = (correct_mask & non_zero_mask)[train_idxs]
-                                valid_train_mask =  non_zero_mask[train_idxs]
+                                valid_train_mask = non_zero_mask[train_idxs]
                                 train_idxs_filtered = train_idxs[valid_train_mask]
-
                             else:
                                 train_idxs_filtered = train_idxs
                             
@@ -535,7 +660,8 @@ class SlidingWindowDecoder:
                                 print(f"Insufficient training data for {train_condition} ({len(train_idxs_filtered)} samples), skipping")
                                 continue
 
-                            test_idxs_filtered = ~train_idxs_filtered
+                            # ✅ Fixed test set selection - use remaining test indices, not boolean inverse
+                            test_idxs_filtered = test_idxs
                             
                             # Test on all trials (no masking for test set)
                             X_train = train_X_full[train_idxs_filtered]
@@ -547,11 +673,9 @@ class SlidingWindowDecoder:
                             y_test = train_y_full[test_idxs_filtered]
                             test_original_indices = original_indices_full[test_idxs_filtered]
                             test_behavior = {key: behavior_full[key][test_idxs_filtered] for key in behavior_full}
-
-                            X_zero = train_X_full[zero_mask]
-                            zero_behavior = {key: behavior_full[key][zero_mask] for key in behavior_full}
-
-                            X_train, X_test = self.preprocess_spikes(X_train, X_test, target, train_behavior, test_behavior, X_zero, zero_behavior)
+                            
+                            if self.partial_regress:
+                                X_train, X_test = self.preprocess_spikes(X_train, X_test, target, train_behavior, test_behavior, X_zero, zero_behavior)
 
                         else:
                             # Original cross-condition logic
@@ -564,7 +688,9 @@ class SlidingWindowDecoder:
                                 spikes_time, behavior_data, target, final_units,
                                 trial_mod=test_mod, trial_coh=test_coh, trial_del=test_delta
                             )
-                            X_train, X_test = self.preprocess_spikes(X_train, X_test, target, train_behavior, test_behavior, X_zero, zero_behavior)
+                            
+                            if self.partial_regress:
+                                X_train, X_test = self.preprocess_spikes(X_train, X_test, target, train_behavior, test_behavior, X_zero, zero_behavior)
                         
                         if len(X_train) == 0 or len(X_test) == 0:
                             continue
@@ -585,11 +711,22 @@ class SlidingWindowDecoder:
                         accuracy = np.mean(y_pred_valid == y_test_valid)
                         auc = roc_auc_score(y_test_valid, y_proba_valid)
                         
+                        # ✅ Fixed coefficient assignment with proper verification
                         classifier_coef = self.decoder_pipeline.named_steps['classifier'].coef_[0]
                         full_coefficients = np.zeros(spikes.shape[0])
-                        full_coefficients[selected_indices] = classifier_coef
                         
-                        # Trial results
+                        # Verify dimensions match
+                        if len(classifier_coef) != len(selected_unit_indices):
+                            print(f"WARNING: Coefficient length ({len(classifier_coef)}) != selected units ({len(selected_unit_indices)})")
+                            continue
+                            
+                        full_coefficients[selected_unit_indices] = classifier_coef
+                        if self.run_permutation_test:
+                            permutation_test = self.permutation_test_by_heading(X_train, y_train, X_test, y_test, test_behavior, y_proba, y_pred, n_permutations=self.n_permutations)
+                        else:
+                            permutation_test = None
+                        
+                        # ✅ Save unit_idx as integer indices (matching neuroproperty format)
                         trial_results = {
                             'time': t,
                             'cv_fold': cv_fold,
@@ -598,7 +735,7 @@ class SlidingWindowDecoder:
                             'y_test': y_test,
                             'accuracy': accuracy,
                             'auc': auc,
-                            'selected_units': selected_indices,
+                            'unit_idx': selected_unit_indices,  # ✅ Integer indices for neuroproperty compatibility
                             'coefficients': full_coefficients,
                             'n_train': len(X_train),
                             'n_test': len(X_test),
@@ -606,7 +743,8 @@ class SlidingWindowDecoder:
                             'train_indices': train_original_indices,
                             'test_indices': test_original_indices,
                             'test_behavior': {key: test_behavior[key] for key in test_behavior},
-                            'train_behavior': {key: train_behavior[key] for key in train_behavior}
+                            'train_behavior': {key: train_behavior[key] for key in train_behavior},
+                            'permutation_test': permutation_test
                         }
                         
                         time_results.append(trial_results)
@@ -681,6 +819,7 @@ class SlidingWindowDecoder:
         print(f"Results saved to: {filepath}")
         
         return filepath
+    
 
-        
-      
+
+
