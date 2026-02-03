@@ -8,7 +8,7 @@ from tkinter import Tk, filedialog
 import pandas as pd
 
 class NeuralDataLoader:
-    def __init__(self, base_dir=None, electrode_id=None, kilo_dir=None, sacc_file=None, verbose=True, tdi_threshold = 0.45):
+    def __init__(self, base_dir=None, electrode_id=None, kilo_dir=None, sacc_file=None, verbose=True, tdi_threshold = 0.45, phy = False):
         self.verbose = verbose
         if base_dir is None:
             try:
@@ -18,7 +18,8 @@ class NeuralDataLoader:
         self.base_dir = base_dir
         if self.verbose:
             print(f"Selected base directory: {self.base_dir}")
-
+        self.phy = phy
+        self.kilosort_dir = kilo_dir
         self.kilosort_dir = kilo_dir
         self.sacc_file = sacc_file
         self.tdi_threshold = tdi_threshold
@@ -147,8 +148,12 @@ class NeuralDataLoader:
         
         # Load basic spike data
         self.spike_times = np.load(os.path.join(kilosort_dir, "spike_times.npy"))      
-        self.cluster_id = np.load(os.path.join(kilosort_dir, "spike_clusters.npy"))  
-        self.cluster_info_file = os.path.join(kilosort_dir, "cluster_KSLabel.tsv")
+        self.cluster_id = np.load(os.path.join(kilosort_dir, "spike_clusters.npy"))
+
+        if self.phy:
+            self.cluster_info_file = os.path.join(kilosort_dir, "cluster_info.tsv")
+        else:  
+            self.cluster_info_file = os.path.join(kilosort_dir, "cluster_KSLabel.tsv")
         
         # Load position files if available
         position_files = {
@@ -377,9 +382,11 @@ class NeuralDataLoader:
         N, M = int(np.sum(good_trials)), len(unique_conditions)
 
         if np.isnan(r_max) or np.isnan(r_min) or (r_max - r_min) == 0 or N <= M or sse < 0:
+            print(f"debug time: r_max: {r_max}, r_min{r_min},N, M: {N, M}, SSE {sse}")
             tdi = np.nan
         else:
             tdi = (r_max - r_min) / (r_max - r_min + 2 * np.sqrt(sse / (N - M)))
+            print(f"tdi = {tdi}")
 
         return avg_firing_rates, var_firing_rates, tdi
 
@@ -450,6 +457,7 @@ class NeuralDataLoader:
         else:
             _, p_vals = ttest_ind(max_spike_mat, min_spike_mat, axis=0, equal_var=False)
 
+
         # Plot
         ax.plot(time_bins, max_mean, color='blue', alpha=0.5, label=f'Max cond ({top_conditions})')
         ax.fill_between(time_bins, max_mean - max_sem, max_mean + max_sem, color='blue', alpha=0.3)
@@ -464,7 +472,7 @@ class NeuralDataLoader:
                 ax.hlines(sig_y, t, t + step_size, color='black', linewidth=2)
 
         # Add reference lines
-        ax.axvspan(0, 0.1, color='gray', alpha=0.2)
+        ax.axvspan(0, 0.5, color='gray', alpha=0.2)
         ax.axvline(0.9, color='purple', linestyle=':')
         ax.set_xlabel('Time from STIMON (s)')
         ax.set_ylabel('Firing rate (Hz)')
@@ -483,7 +491,20 @@ class NeuralDataLoader:
         # Load cluster info
         cluster_info = pd.read_csv(self.cluster_info_file, sep='\t')
         all_clusters = cluster_info['cluster_id'].values
-        cluster_labels = dict(zip(cluster_info['cluster_id'], cluster_info['KSLabel']))
+        
+        if self.phy:
+            cluster_labels = dict(zip(cluster_info['cluster_id'], cluster_info['group']))
+            depths = dict((zip(cluster_info['cluster_id'], cluster_info['depth'])))
+            idx = (cluster_info['group'] == 'good') #| (cluster_info['group'] == 'mua')
+            good_ids = set(cluster_info.loc[idx, 'cluster_id'].values)
+            cluster_labels = {k: v for k, v in cluster_labels.items() if k in good_ids}
+            self.cluster_depth = {k: v for k, v in depths.items() if k in good_ids}
+            all_clusters = all_clusters[idx]
+
+        else:
+            cluster_labels = dict(zip(cluster_info['cluster_id'], cluster_info['KSLabel']))
+            self.cluster_depth = self._get_cluster_depths()
+
         
         # Initialize arrays to store all data
         tdi_all = np.full(len(all_clusters), np.nan)
@@ -756,6 +777,9 @@ class NeuralDataLoader:
             
             # Keep the saccade line
             ax.axvline(0.9, color='purple', linestyle=':', linewidth=3, alpha=0.8)
+            # add stimulus duration shaded region
+            ax.axvspan(0, 10, color='gray', alpha=0.2)
+
 
         print(f"High TDI units: {n_high_tdi}, Low TDI units: {n_low_tdi}")
 
@@ -781,13 +805,27 @@ class NeuralDataLoader:
         # Load cluster info
         cluster_info = pd.read_csv(self.cluster_info_file, sep='\t')
         all_clusters = cluster_info['cluster_id'].values
-        cluster_labels = dict(zip(cluster_info['cluster_id'], cluster_info['KSLabel']))
+
+
+        if self.phy:
+            cluster_labels = dict(zip(cluster_info['cluster_id'], cluster_info['group']))
+            depths = dict((zip(cluster_info['cluster_id'], cluster_info['depth'])))
+            idx = (cluster_info['group'] == 'good') #| (cluster_info['group'] == 'mua')
+            good_ids = set(cluster_info.loc[idx, 'cluster_id'].values)
+            cluster_labels = {k: v for k, v in cluster_labels.items() if k in good_ids}
+            all_depths = {k: v for k, v in depths.items() if k in good_ids}
+            all_clusters = all_clusters[idx]
+            print(f"Using PHY cluster labels and depths for {len(all_clusters)} good clusters")
+
+        else:
+            cluster_labels = dict(zip(cluster_info['cluster_id'], cluster_info['KSLabel']))
+            all_depths = self._get_cluster_depths()
         
         # Get event data
         conditions = np.array(self.event_data['condition'])
         align_event = np.array(self.event_data['STIMON'])
         good_trials = np.array(self.event_data['goodtrial']) == 1
-        all_depths = self._get_cluster_depths()
+        
 
         # Collect valid units with depth info
         cluster_data_all = []
@@ -891,7 +929,8 @@ class NeuralDataLoader:
                 baseline_tdi_values = tdi_matrix[unit_idx, baseline_indices]
                 baseline_tdi = np.nanmean(baseline_tdi_values)
 
-                tdi_baseline_corrected[unit_idx, :] = (tdi_matrix[unit_idx, :] - baseline_tdi) / (baseline_tdi + 0.0000001) 
+                # tdi_baseline_corrected[unit_idx, :] = (tdi_matrix[unit_idx, :] - baseline_tdi) / (baseline_tdi + 0.0000001) 
+                tdi_baseline_corrected[unit_idx, :] = tdi_matrix[unit_idx, :]# - baseline_tdi
 
                             
             except Exception as e:
@@ -900,7 +939,7 @@ class NeuralDataLoader:
         
         # Create single plot
         fig, ax = plt.subplots(1, 1, figsize=(12, max(6, n_units * 0.03)))
-        vmin, vmax = 0, 2
+        vmin, vmax = 0, 1
         
         # FIXED: Correct extent using array dimensions
         extent = [time_start, time_end, 0, n_units]
@@ -927,14 +966,14 @@ class NeuralDataLoader:
             ax.set_yticklabels(ytick_labels)
         
         # Add colorbar
-        plt.colorbar(im, ax=ax, shrink=0.8, label='TDI (Baseline Corrected)')
+        plt.colorbar(im, ax=ax, shrink=0.8, label='TDI ')
         
         # Add labels and formatting
         ax.set_xlabel('Time from STIMON (s)', fontsize=12)
         ax.set_ylabel('Depth (μm)', fontsize=12)
         
         # Add stimulus period as shaded region
-        ax.axvspan(0, 0.1, color='white', alpha=0.2)
+        ax.axvspan(0, 0.2, color='white', alpha=0.2)
         
         # Add baseline period marker
         ax.axvspan(baseline_start, baseline_end, color='gray', alpha=0.3, label='Baseline')

@@ -683,7 +683,6 @@ class CreateUnitStruct:
                 unit_spike_time = self.timestamps[unit_kilo_frames]
 
                 cg_row = self.cluster_group.loc[self.cluster_group["cluster_id"] == cluster]
-                print(i, cluster, cg_row)
                 if cg_row.empty:
                     continue
 
