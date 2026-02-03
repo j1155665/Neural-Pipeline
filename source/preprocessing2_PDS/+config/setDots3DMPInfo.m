@@ -41,22 +41,20 @@ switch Info.subject
         tuneventInfo.output_pdf = fullfile(Info.results_dir, [Info.session_date '_dots3DMPtunning_' unitInfo.unit_profile '_frplots.pdf']);
 
         %% === Time Info (Main Analysis) ===
-        timeInfo.offset = 0.05;
+        timeInfo.offset = 0.025;
         timeInfo.binSize = 0.02;
         timeInfo.alignEvent = {'stimOn','saccOnset','postTargHold'};
         timeInfo.plotname = {'Stim On','Choice', 'PDW'};
-        timeInfo.center_start = [-0.1, -0.6, -0.4];
-        timeInfo.center_stop = [0.8, 0.3, 0.5];
+        timeInfo.center_start = [-0.1, -0.6, -0.6];
+        timeInfo.center_stop = [0.9, 0.4, 0.4];
         timeInfo.sigma = 0;
         timeInfo.velprofiledt = 0.0083;
 
         %% === Time Info (Tuning Analysis) ===
-        tuntimeInfo.offset = 0.05;
+        tuntimeInfo.offset = 0.025;
         tuntimeInfo.binSize = 0.02;
         tuntimeInfo.alignEvent = {'stimOn'};
         tuntimeInfo.plotname = {'Stim On'};
-        tuntimeInfo.center_start = [-0.1];
-        tuntimeInfo.center_stop = [0.8];
         tuntimeInfo.sigma = 0;
         tuntimeInfo.velprofiledt = 0.0083;
         tuntimeInfo.trial_start = -0.2;

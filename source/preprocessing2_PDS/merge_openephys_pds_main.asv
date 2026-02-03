@@ -6,10 +6,10 @@
 %% === Basic Configuration ===
 Info.subject = 'zarya';
 % Info.session_dates = {'20250602', '20250702', '20250523',  '20250501', '20250417'};
-Info.session_dates = {'20250306'};
+Info.session_dates = {'20250710'};
 Info.task_name = 'dots3DMP';
 Info.computpsth = 0; % do you want to compute psth?
-Info.mergepds = 1; % pool pds data in
+Info.mergepds = 0; % pool pds data in
 Info.savedata = 0;
 Info.reloadcleaneddata = 0;
 Info.plotpsth = 0;
@@ -40,8 +40,6 @@ for s = 1:length(Info.session_dates)
         if Info.mergepds
 
             Info = utils.mergePdsStruct(Info);
-            Info = utils.finalizing_tuning(Info);
-            
 
         end
 
@@ -95,13 +93,12 @@ for s = 1:length(Info.session_dates)
 
 end
 
-% %% Appnedix plot example units from single session
-% close all;
-% session = 21;
-% unit_id = 381;
-% utils.plotexampletuning(Info.dataStruct(session).data, tuntimeInfo, tuneventInfo, unit_id);
-% % utils.plottuningcurve(Info.dataStruct(session).data, tuntimeInfo, tuneventInfo, unit_id, [800, 1800]);
-% % % %% 
-% % close all
-% % utils.plotexample(Info.dataStruct(23).data, timeInfo, eventInfo, 707, 4);
-% utils.plotexample(Info.dataStruct(session).data, timeInfo, eventInfo, unit_id, 6);
+%% Appnedix plot example units from single session
+close all;
+% utils.plotexampletuning(Info.dataStruct(23).data, tuntimeInfo, tuneventInfo, 707);
+% utils.plotexampletuning(Info.dataStruct(21).data, tuntimeInfo, tuneventInfo, 381);
+utils.plottuningcurve(Info.dataStruct(21).data, tuntimeInfo, tuneventInfo, 381, [500, 1500]);
+% % %% 
+% close all
+% utils.plotexample(Info.dataStruct(23).data, timeInfo, eventInfo, 707, 4);
+% utils.plotexample(Info.dataStruct(21).data, timeInfo, eventInfo, 381, 4);

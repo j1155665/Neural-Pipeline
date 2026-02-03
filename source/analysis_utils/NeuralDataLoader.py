@@ -192,7 +192,7 @@ class NeuralDataLoader:
             
         return spkrate
     
-    def get_behavioral_data(self, task='dots3DMP', good_trials_only=True):
+    def get_behavioral_data(self, task='dots3DMP', good_trials_only=True, cal_mean_RT=False):
         # Get behavioral data for analysis
         if task == 'dots3DMP' and self.dots3DMP_data is not None:
             behavioral_data = {}
@@ -215,6 +215,11 @@ class NeuralDataLoader:
                 if good_trials is not None:
                     for key in behavioral_data:
                         behavioral_data[key] = behavioral_data[key][good_trials]
+
+            # Calculate mean RT if requested
+            if cal_mean_RT:
+                mean_RT = self.calculate_mean_RT(behavioral_data)
+                behavioral_data['mean_RT'] = mean_RT
             
             return behavioral_data
             
@@ -243,6 +248,26 @@ class NeuralDataLoader:
             print(f"No data available for task: {task}")
             return None
     
+    def calculate_mean_RT(self, behavioral_data):
+        """Calculate mean RT for each modality-coherence combination"""
+        mean_RT = {}
+        
+        for mod in range(1, 4):  # modalities 1, 2, 3
+            for coh in range(1, 3):  # coherences 1, 2
+                if mod == 1 and coh == 2:
+                    continue  # skip invalid combination
+                
+                mask = (behavioral_data['modality'] == mod) & (behavioral_data['coherenceInd'] == coh)
+                
+                if np.any(mask):
+                    mean_rt_value = np.mean(behavioral_data['RT'][mask])
+                    mean_RT[f'mod{mod}_coh{coh}'] = mean_rt_value
+                else:
+                    mean_RT[f'mod{mod}_coh{coh}'] = np.nan
+                    print(f"No trials for modality {mod}, coherence {coh}")
+        
+        return mean_RT
+
     def get_unit_info(self, good_units_only=False):
         # Get unit information
         if self.dots3DMP_data is None:
@@ -279,49 +304,42 @@ class NeuralDataLoader:
             'n_tuning_good_trials': len(self.get_good_trials('tuning')) if self.get_good_trials('tuning') is not None else 0
         }
     
-    def get_units_by_area(self, unit_info = None, area_name = 'dual'):
-            """Get unit indices for specific brain area based on depth"""
-            # get_unit_info is a method of NeuralDataLoader, not Dots3DMPConfig. So we need to pass unit_info as an argument.
-            if unit_info is None:
-                unit_info = self.get_unit_info(good_units_only=True)
+    def get_units_by_area(self, unit_info=None, area_name='dual'):
+        """Get unit indices for specific brain area based on depth"""
+        if unit_info is None:
+            unit_info = self.get_unit_info(good_units_only=True)
 
-            if self.date == "20250523":
-                area_map = {
-                    'MST': [0, 4000],
-                    'VPS': [4001, 8000],
-                    'MT': None,
-                    'dual':[0, 8000]
-                }
-            elif self.date == "20250602":
-                area_map = {
-                    'MST': [0, 3500],
-                    'VPS': [3500, 8000],
-                    'MT': None,
-                    'dual':[0, 8000]
-                }
-            elif self.date == "20250702":
-                area_map = {
-                    'MST': [1300, 7000],
-                    'VPS': [7000, 8000],
-                    'MT':  [0, 1300],
-                    'dual':[0, 8000]
-                }
-            elif self.date == "20250710":
-                area_map = {
-                    'MST': [0, 4000],
-                    'VPS': [4001, 8000],
-                    'MT': None,
-                    'dual':[0, 8000]
-                }
-            
-            if area_name not in area_map:
-                raise ValueError(f"Unknown area name: {area_name}")
-            elif  area_map[area_name] is  None:
-                valid_units = np.arange(len(unit_info['depth']))
-            else:
-                valid_units = np.where((unit_info['depth'] >= area_map[area_name][0]) & (unit_info['depth'] <= area_map[area_name][1]))[0]
+        # Lookup area map by date, with fallback for unmapped dates
+        area_map = self._get_area_map_for_date(self.date)
         
-            return valid_units
+        if area_map is None:
+            print(f"Warning: No area mapping for date {self.date}. Returning all units.")
+            return np.arange(len(unit_info['depth']))
+        
+        if area_name not in area_map:
+            raise ValueError(f"Unknown area name: {area_name}")
+        elif area_map[area_name] is None:
+            valid_units = np.arange(len(unit_info['depth']))
+        else:
+            valid_units = np.where(
+                (unit_info['depth'] >= area_map[area_name][0]) & 
+                (unit_info['depth'] <= area_map[area_name][1])
+            )[0]
+        
+        return valid_units
+
+    def _get_area_map_for_date(self, date):
+        """Return area mapping for a given date. Centralized config."""
+        area_maps = {
+            "20250523": {'MST': [0, 4000], 'VPS': [4001, 8000], 'MT': None, 'dual': [0, 8000]},
+            "20250602": {'MST': [0, 3500], 'VPS': [3500, 8000], 'MT': None, 'dual': [0, 8000]},
+            "20250702": {'MST': [1300, 7000], 'VPS': [7000, 8000], 'MT': [0, 1300], 'dual': [0, 8000]},
+            "20250710": {'MST': [0, 4000], 'VPS': [4001, 8000], 'MT': None, 'dual': [0, 8000]},
+            "20250501": {'MST': [0, 3500], 'VPS': [3501, 8000], 'MT': None, 'dual': [0, 8000]},
+            "20250417": {'MST': [1300, 7000], 'VPS': [7001, 10000], 'MT': [0, 1300], 'dual': [0, 10000]},
+            "20250306": {'MST': [0, 5200], 'VPS': [5201, 10000], 'MT': None, 'dual': [0, 10000]},
+        }
+        return area_maps.get(date)
     
 
 class Dots3DMPConfig:
@@ -356,35 +374,48 @@ class Dots3DMPConfig:
         }
         
         # === Tuning Event Info ===
-        self.tuning_event_info = {
-            'name': ['modality', 'coherenceInd', 'headingInd'],
-            'heading_values': [-45, -21.2, -10, -3.9, 3.9, 10, 21.2, 45],
-            'class_1': [[], [], [1, 2, 3, 4]],
-            'class_2': [[], [], [5, 6, 7, 8]],
-            # Mapping for tuning
-            'modality_labels': {1: 'vestibular', 2: 'visual', 3: 'combined'},
-            'coherence_values': {1: 0.2, 2: 0.7},
-            'heading_idx_to_value': {i+1: val for i, val in enumerate([-45, -21.2, -10, -3.9, 3.9, 10, 21.2, 45])}
-        }
+        if self.date == '20250306':
+            self.tuning_event_info = {
+                'name': ['modality', 'coherenceInd', 'headingInd'],
+                'heading_values': [-90, -45, -21.2, -10, -3.9, -1.5, 0, 1.5, 3.9, 10, 21.2, 45, 90],
+                'class_1': [[], [], [1, 2, 3, 4, 5, 6]],
+                'class_2': [[], [], [8, 9, 10, 11, 12, 13]],
+                # Mapping for tuning
+                'modality_labels': {1: 'vestibular', 2: 'visual', 3: 'combined'},
+                'coherence_values': {1: 0.2, 2: 0.7},
+                'heading_idx_to_value': {i+1: val for i, val in enumerate([-90, -45, -21.2, -10, -3.9, -1.5, 0, 1.5, 3.9, 10, 21.2, 45, 90])}
+            }
+        else:
+            self.tuning_event_info = {
+                    'name': ['modality', 'coherenceInd', 'headingInd'],
+                    'heading_values': [-45, -21.2, -10, -3.9, 3.9, 10, 21.2, 45],
+                    'class_1': [[], [], [1, 2, 3, 4]],
+                    'class_2': [[], [], [5, 6, 7, 8]],
+                    # Mapping for tuning
+                    'modality_labels': {1: 'vestibular', 2: 'visual', 3: 'combined'},
+                    'coherence_values': {1: 0.2, 2: 0.7},
+                    'heading_idx_to_value': {i+1: val for i, val in enumerate([-45, -21.2, -10, -3.9, 3.9, 10, 21.2, 45])}
+                }
         
         # === Time Info (Main Analysis) ===
         self.time_info = {
-            'offset': 0.05,
+            'offset': 0.025,
             'bin_size': 0.02,
             'align_events': ['stimOn', 'saccOnset', 'postTargHold'],
             'plot_names': ['Stim On', 'Choice', 'PDW'],
-            'center_start': [-0.1, -0.6, -0.4],
-            'center_stop': [0.8, 0.3, 0.5],
+            'center_start': [-0.1, -0.6, -0.6],
+            'center_stop': [0.9, 0.4, 0.4],
             'sigma': 0,
             'vel_profile_dt': 0.0083,
             'max_velocity': 0.66,
             'max_acceleration': 0.4,
             'max_deceleration': 0.93,
+            'trial_start_t': 0.4250
         }
         
         # === Time Info (Tuning Analysis) ===
         self.tuning_time_info = {
-            'offset': 0.05,
+            'offset': 0.025,
             'bin_size': 0.02,
             'align_events': ['stimOn'],
             'plot_names': ['Stim On'],

@@ -7,8 +7,8 @@
 
 subject = 'zarya';
 paradigm = 'dots3DMP';
-datestart = [20250801];
-dateend = [20250831];
+datestart = [20250101];
+dateend = [20251231];
 % where dataStruct should be saved
 % localDir = '/Users/stevenjerjian/Desktop/FetschLab/PLDAPS_data/';
 % localDir = uigetdir([], 'Choose directory to save data to');
