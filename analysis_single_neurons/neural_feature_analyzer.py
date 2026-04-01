@@ -1018,7 +1018,12 @@ class NeuralFeatureAnalyzer:
                     'ves_neurometric_sigma', 'vis_neurometric_sigma', 'comb_neurometric_sigma',
                     'ves_neurometric_n_headings', 'vis_neurometric_n_headings', 'comb_neurometric_n_headings',
                     'ves_corr_r', 'ves_corr_p', 'vis_corr_r', 'vis_corr_p',
-                    'ves_pval', 'vis_pval', 'comb_pval']
+                    'ves_pval', 'vis_pval', 'comb_pval',
+                    # NEW: Add baseline columns
+                    'ves_baseline_threshold', 'vis_baseline_threshold', 'comb_baseline_threshold',
+                    'ves_baseline_r2', 'vis_baseline_r2', 'comb_baseline_r2',
+                    'ves_baseline_mu', 'vis_baseline_mu', 'comb_baseline_mu',
+                    'ves_baseline_sigma', 'vis_baseline_sigma', 'comb_baseline_sigma']
         
         # Add tuning-specific columns if present
         if self.is_tuning:
