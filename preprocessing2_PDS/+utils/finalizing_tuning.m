@@ -1,6 +1,6 @@
 function Info = finalizing_tuning(Info)
 
-data = Info.dataStruct(Info.session_idx).data;
+data = Info.dataStruct_session.data;
 
 headingInd = data.dots3DMPtuning.events.headingInd;
 coherenceInd = data.dots3DMPtuning.events.coherenceInd;

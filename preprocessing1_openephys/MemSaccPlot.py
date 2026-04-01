@@ -472,7 +472,7 @@ class NeuralDataLoader:
                 ax.hlines(sig_y, t, t + step_size, color='black', linewidth=2)
 
         # Add reference lines
-        ax.axvspan(0, 0.5, color='gray', alpha=0.2)
+        ax.axvspan(0, 0.2, color='gray', alpha=0.2)
         ax.axvline(0.9, color='purple', linestyle=':')
         ax.set_xlabel('Time from STIMON (s)')
         ax.set_ylabel('Firing rate (Hz)')
@@ -778,7 +778,7 @@ class NeuralDataLoader:
             # Keep the saccade line
             ax.axvline(0.9, color='purple', linestyle=':', linewidth=3, alpha=0.8)
             # add stimulus duration shaded region
-            ax.axvspan(0, 10, color='gray', alpha=0.2)
+            ax.axvspan(0, 0.2, color='gray', alpha=0.2)
 
 
         print(f"High TDI units: {n_high_tdi}, Low TDI units: {n_low_tdi}")

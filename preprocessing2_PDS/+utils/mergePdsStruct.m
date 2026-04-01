@@ -64,11 +64,13 @@ else
     if isempty(Info.session_idx)
         error('Session index not found for date: %s', date_str);
     end
-    Info.dataStruct_session = load(Info.dataFile);
+    if isempty(Info.dataStruct_session)
+        Info.dataStruct_session = load(Info.dataFile);
+    end
     if isempty(Info.dataStruct(Info.session_idx).data)
         Info.dataStruct(Info.session_idx).data = Info.dataStruct_session.data;
     end
-    targetData = Info.dataStruct(Info.session_idx).data.(param);
+    targetData = Info.dataStruct_session.data.(param);
     fprintf('Using neural data from session index: %d\n', Info.session_idx);
 end
 

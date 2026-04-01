@@ -331,20 +331,22 @@ class NeuralDataLoader:
     def _get_area_map_for_date(self, date):
         """Return area mapping for a given date. Centralized config."""
         area_maps = {
-            "20250523": {'MST': [0, 4000], 'VPS': [4001, 8000], 'MT': None, 'dual': [0, 8000]},
-            "20250602": {'MST': [0, 3500], 'VPS': [3500, 8000], 'MT': None, 'dual': [0, 8000]},
-            "20250702": {'MST': [1300, 7000], 'VPS': [7000, 8000], 'MT': [0, 1300], 'dual': [0, 8000]},
-            "20250710": {'MST': [0, 4000], 'VPS': [4001, 8000], 'MT': None, 'dual': [0, 8000]},
-            "20250501": {'MST': [0, 3500], 'VPS': [3501, 8000], 'MT': None, 'dual': [0, 8000]},
-            "20250417": {'MST': [1300, 7000], 'VPS': [7001, 10000], 'MT': [0, 1300], 'dual': [0, 10000]},
-            "20250306": {'MST': [0, 5200], 'VPS': [5201, 10000], 'MT': None, 'dual': [0, 10000]},
+            "20250523": {'MST': [0, 4000], 'VPS': [4001, 8000], 'MT': None, 'dual': [0, 8000]},  #double check done!
+            "20250602": {'MST': [0, 3500], 'VPS': [3501, 8000], 'MT': None, 'dual': [0, 8000]},  #double check done!
+            "20250702": {'MST': [1300, 7000], 'VPS': [7000, 8000], 'MT': [0, 1300], 'dual': [0, 8000]}, #double check done!
+            "20250710": {'MST': [0, 4000], 'VPS': [4001, 8000], 'MT': None, 'dual': [0, 8000]},  #double check done!
+            "20250501": {'MST': [0, 3500], 'VPS': [3501, 8000], 'MT': None, 'dual': [0, 8000]},  #double check done!
+            "20250417": {'MST': [1501, 7000], 'VPS': [7001, 10000], 'MT': [0, 1500], 'dual': [0, 10000]},  #double check done!
+            "20250306": {'MST': [1001, 5500], 'VPS': [5501, 10000], 'MT': [0, 1000], 'dual': [0, 10000]}, #double check done!
+            "20250411": {'MST': [0, 3000], 'VPS': [3001, 8000], 'MT': None, 'dual': [0, 8000]}  #double check done!
         }
         return area_maps.get(date)
     
 
 class Dots3DMPConfig:
-    def __init__(self, subject):
+    def __init__(self, subject, date=None):
         self.subject = subject
+        self.date = date
         self.event_info = {}
         self.tuning_event_info = {}
         self.time_info = {}
