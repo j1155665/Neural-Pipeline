@@ -288,6 +288,7 @@ class NeuralDataLoader:
     def parse_ttl_events(self):
         """Parse TTL signals to extract trial events"""
         # Event codes and names
+
         event_codes = [1, 2, 3, 4, 4, 6, 9, 10]  # TRIAL, FIX, FIXATION, STIMON, STIMOFF, SACC, REWARD, BREAKFIX
         event_names = ['TRIAL', 'FIX', 'FIXATION', 'STIMON', 'STIMOFF', 'SACC', 'REWARD', 'BREAKFIX']
 
@@ -302,6 +303,7 @@ class NeuralDataLoader:
             self._print(f"Filtering TTL data for block {self.sacc_file}")
 
         # Find trial indices
+        print(ttl_values[100:600])  # Debug print to check TTL values YC
         trial_indices = np.where(ttl_values == 1)[0]  # TRIAL events
         fix_indices = np.where(ttl_values == 2)[0]    # FIX events
         idx_diffs = np.diff(trial_indices) > 10

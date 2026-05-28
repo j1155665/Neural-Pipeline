@@ -5,9 +5,9 @@
 
 %% === Basic Configuration ===
 Info.subject = 'zarya';
-Info.session_dates = {'20250602', '20250702', '20250523',  '20250501', '20250417', '20250710', '20250411', '20250306'};
+Info.session_dates = {'20260417'};
+Info.session_dates = {'20250523', '20250602','20250702', '20250710', '20250501', '20250417', '20250306', '20250411', '20250417'};
 close all
-Info.session_dates = {'20250702'};
 Info.task_name = 'dots3DMP';
 Info.computpsth = 0; % do you want to compute psth?
 Info.mergepds = 0; % pool pds data in
@@ -16,6 +16,7 @@ Info.reloadcleaneddata = 0;
 Info.plotpsth = 0;
 Info.plotpsth_correct =0 ;
 Info.plot_tuning_choice = 1;
+
 
 for s = 1:length(Info.session_dates)
     Info.session_date = Info.session_dates{s};
@@ -42,7 +43,7 @@ for s = 1:length(Info.session_dates)
         if Info.mergepds
 
             Info = utils.mergePdsStruct(Info);
-            Info = utils.finalizing_tuning(Info);
+%             Info = utils.finalizing_tuning(Info);
 
 
         end

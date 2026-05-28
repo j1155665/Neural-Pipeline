@@ -67,15 +67,36 @@ class MergeRecordingFile:
             return None
         return None
     
-    def extract_channel_positions(self):
+    def extract_channel_positions(self, AP_name='ProbeA'):
         """Get the configuration of the probe as ProbeConfig.txt"""
 
-        xml_file = os.path.join(self.directory, self.date , self.matching_files[0], 'Record Node 101', 'settings.xml')
+        xml_file = os.path.join(self.directory, self.date, self.matching_files[0], 'Record Node 101', 'settings.xml')
         tree = ET.parse(xml_file)
         root = tree.getroot()
 
-        probe_node = root.find(".//NP_PROBE")
+        # Find all NP_PROBE nodes
+        probe_nodes = root.findall(".//NP_PROBE")
+        
+        probe_node = None
+        for node in probe_nodes:
 
+            probe_serial = node.get('probe_serial_number')
+            custom_name = node.get('custom_probe_name')
+            
+            # For now, we'll match by order: ProbeA = first probe, ProbeB = second probe
+            # You can modify this logic based on your needs
+            if AP_name == 'ProbeA' and node == probe_nodes[0]:
+                probe_node = node
+                break
+            elif AP_name == 'ProbeB' and node == probe_nodes[1]:
+                probe_node = node
+                break
+        
+        if probe_node is None:
+            print(f"Probe {AP_name} not found in XML")
+            return
+
+        # Extract electrode positions
         xpos_node = probe_node.find("ELECTRODE_XPOS")
         ypos_node = probe_node.find("ELECTRODE_YPOS")
 
@@ -90,14 +111,18 @@ class MergeRecordingFile:
             x_pos.append(x)
             y_pos.append(y)
 
-        file_path = os.path.join(self.directory, self.date ,"ProbeConfig.txt")
+        # Save with probe name in filename
+        file_path = os.path.join(self.directory, self.date, f"ProbeConfig_{AP_name}.txt")
         with open(file_path, 'w') as f:
+            f.write(f"Probe: {AP_name}\n")
+            f.write(f"Serial Number: {probe_node.get('probe_serial_number')}\n")
+            f.write(f"Part Number: {probe_node.get('probe_part_number')}\n\n")
             f.write("X-pos\n")
             f.write(f"[{', '.join(str(x) for x in x_pos)}]\n\n")
             f.write("Y-pos\n")
             f.write(f"[{', '.join(str(y) for y in y_pos)}]\n\n")
 
-        print(f"Channel configuration saved to '{file_path}'.")
+        print(f"Channel configuration for {AP_name} saved to '{file_path}'.")
 
         return
 
@@ -171,8 +196,15 @@ class MergeRecordingFile:
                 unique_ttl = np.unique(ttl_data, return_index=True)
                 ordered_unique = unique_ttl[0][np.argsort(unique_ttl[1])]
                 
-                if ordered_unique.size > 2:
-                    ttl_unique = ordered_unique[1] * 100 + ordered_unique[2]
+                if ordered_unique.size > 3:
+                    ones_digit = ordered_unique[2]
+                    
+                    if ones_digit == 2 and ordered_unique[3] == 3:
+                        ones_digit = 0
+                    elif ones_digit == 2 and ordered_unique[3] == 2:
+                        ones_digit = 2
+                    
+                    ttl_unique = ordered_unique[1] * 100 + ones_digit
                     ttl_unique_list.append(ttl_unique)
  
                 else:
@@ -185,11 +217,16 @@ class MergeRecordingFile:
 
         return ttl_unique_list
 
-    def merge_ap_data(self, num_channels=385): # after 20250718, upgrade openephys 1.0, num_channel == 384
+    def merge_ap_data(self, num_channels=384, AP_name = 'ProbeA'): # after 20250718, upgrade openephys 1.0, num_channel == 384, before that, num_channel == 385
         """Merges AP (action potential) data from multiple recording files and includes block information."""
-        output_path = os.path.join(self.directory, f"{self.date}", f"{self.subject}{self.date}dots3DMP_AP.dat")
-        aptime_out_path = os.path.join(self.directory, f"{self.date}", f"{self.subject}{self.date}dots3DMP_APtimestamps.npy")
-        aptime_block_path = os.path.join(self.directory, f"{self.date}", f"{self.subject}{self.date}dots3DMP_APblocks.npy")
+        if AP_name in ['ProbeA']:
+            output_path = os.path.join(self.directory, f"{self.date}", f"{self.subject}{self.date}dots3DMP_AP.dat")
+            aptime_out_path = os.path.join(self.directory, f"{self.date}", f"{self.subject}{self.date}dots3DMP_APtimestamps.npy")
+            aptime_block_path = os.path.join(self.directory, f"{self.date}", f"{self.subject}{self.date}dots3DMP_APblocks.npy")       
+        else:
+            output_path = os.path.join(self.directory, f"{self.date}", f"{self.subject}{self.date}dots3DMP_AP{AP_name}.dat")
+            aptime_out_path = os.path.join(self.directory, f"{self.date}", f"{self.subject}{self.date}dots3DMP_AP{AP_name}timestamps.npy")
+            aptime_block_path = os.path.join(self.directory, f"{self.date}", f"{self.subject}{self.date}dots3DMP_AP{AP_name}blocks.npy")
 
         # Lists to store AP timestamps and block markers
         ap_timestamps_list = []
@@ -203,7 +240,7 @@ class MergeRecordingFile:
             print(f"Processing file {i+1}/{len(self.matching_data)}: {file}")
             
             # Path to continuous data
-            filepath = os.path.join(file, 'continuous', 'Neuropix-PXI-100.ProbeA-AP', 'continuous.dat')
+            filepath = os.path.join(file, 'continuous', f"Neuropix-PXI-100.{AP_name}-AP", 'continuous.dat')
 
             # Check if the file exists
             if os.path.exists(filepath):
@@ -232,13 +269,12 @@ class MergeRecordingFile:
             # Determine the mode for file opening (write or append)
             mode = 'wb' if i == 0 else 'ab'
             with open(output_path, mode) as f:
-                start_size = os.path.getsize(output_path) if os.path.exists(output_path) else 0
                 data.tofile(f)  # Write or append data
                 end_size = os.path.getsize(output_path)
                 print(f"Merged file size: {end_size / (1024 ** 3):.2f} GB")
 
             # Load AP timestamps and add block info
-            apt_filepath = os.path.join(file, 'continuous', 'Neuropix-PXI-100.ProbeA-AP', 'timestamps.npy')
+            apt_filepath = os.path.join(file, 'continuous', f"Neuropix-PXI-100.{AP_name}-AP", 'timestamps.npy')
             if os.path.exists(apt_filepath):
                 ap_timestamps = np.load(apt_filepath)
                 ap_timestamps += np.ones(ap_timestamps.shape) * self.time_adjustment[i]
@@ -406,11 +442,13 @@ class MergeRecordingFile:
 
 
 class CreateEventStruct:
-    def __init__(self, directory, subject, date):
+
+    def __init__(self, directory, subject, date, AP_name='ProbeA'):
         self.directory = directory
         self.subject = subject
         self.date = date
         self.data_path = os.path.join(directory, date)
+        self.probe_name = AP_name
         
         self.full_words = np.load(os.path.join(self.data_path, f"{subject}{date}dots3DMP_ttl.npy"))
         self.timestamps = np.load(os.path.join(self.data_path, f"{subject}{date}dots3DMP_ttltimestamps.npy"))
@@ -418,8 +456,16 @@ class CreateEventStruct:
         
         self.full_words[self.full_words >= 256] -= 256
         self.block_indices = self.ttl_blocks >= 0  # Include all blocks
-        self.block_type = ['dots3DMP', 'dots3DMPtuning']
+        self.block_type = ['dots3DMP', 'dots3DMPtuning', 'dots3DMP_fixedRT', 'SaccadeTraining']
         self.event_data = None
+        
+        # Saccade training target locations
+        self.sacc_angles = np.array([0, 0, 90, 90, 180, 180, 270, 270, 
+                                     42, 42, 42, 138, 138, 138, 
+                                     211, 211, 211, 329, 329, 329])
+        self.sacc_eccs = np.array([5, 10, 5, 10, 5, 10, 5, 10, 
+                                   3.5, 6.72, 10, 3.5, 6.72, 10, 
+                                   3.5, 5.83, 10, 3.5, 5.83, 10])
 
     def filter_events(self):
         """ Filters event timestamps and words based on valid indices. """
@@ -442,182 +488,337 @@ class CreateEventStruct:
         self.pldaps_filetimes = info['pldaps_filetimes'][0][0].flatten()
         self.par = info['par'][0, 0]
 
-    def process_trials(self):
-        """Processes trials, extracts event timestamps, and assigns behavioral indices."""
-        self.data = self.filtered_full_words.copy()
-        self.timestamps = self.filtered_timestamps.copy()
+    def process_saccade_trials(self, block_indices):
+        """Process SaccadeTraining trials with specific event structure"""
+        data_block = self.filtered_full_words[block_indices]
+        time_block = self.filtered_timestamps[block_indices]
+        block_nums = self.filtered_ttl_blocks[block_indices]
+        
+        # Event codes for saccade training
+        TRIAL, FIX, FIXATION, STIMON, STIMOFF, SACC, REWARD, BREAKFIX = 1, 2, 3, 4, 4, 6, 9, 10
+        
+        # Find trial indices - use ALL trial events, not filtered ones
+        trial_indices_local = np.where(data_block == TRIAL)[0]
+        fix_indices = np.where(data_block == FIX)[0]
+        
 
-        # Define event codes
-        TRIAL, FIX, FIXATION, STIMONOFF, SACC, TARGHOLD, POSTTARGHOLD,REWARD, BREAKFIX = 1, 2, 3, 5, 6, 7, 8, 9, 10
-
-        # Define BLOCK and event indices
-        total_blocks = np.unique(self.filtered_ttl_blocks)
-        self.block_type = np.full(self.filtered_ttl_blocks.shape, '', dtype='O')
-
-        for i, block in enumerate(total_blocks):
-
-            if not np.isin(block, self.pldaps_filetimes).any():
-                continue
-
-            matched_idx = np.where(block == self.pldaps_filetimes)[0]
-            corresponding_par = self.par[matched_idx[0]]
-
-            block_indices = np.where(self.filtered_ttl_blocks == block)[0]
-            data_block = self.data[block_indices[0]:block_indices[-1] + 1]
-            
-            self.block_type[block_indices[0]:block_indices[-1] + 1] = corresponding_par
-            
-            first_fix_idx = np.where(data_block == FIX)[0]
-
-            if first_fix_idx.size == 0:
-                print("no fixation found!")
-                continue
-
-            
-        # Define TRIAL
-        trial_indices = np.where(self.data == TRIAL)[0]
-        idx_diffs = np.diff(trial_indices) > 10
-        self.trial_indices = np.concatenate(([trial_indices[0]], trial_indices[1:][idx_diffs]))
-        self.trial_type = np.array([b.strip() for b in self.block_type[self.trial_indices]])
-        self.trial_size = len(self.trial_indices)
-
-
-        # Define Behavior Indices
-        event_indices = {
-            'fpOn_idx': self.timestamps[np.where(self.data == FIX)[0]],
-            'fixation_idx': self.timestamps[np.where(self.data == FIXATION)[0]],
-            'stimOn_idx': self.timestamps[np.where(self.data == STIMONOFF)[0]],
-            'stimOff_idx': self.timestamps[np.where(self.data == STIMONOFF)[-0]],
-            'saccOnset_idx': self.timestamps[np.where(self.data == SACC)[0]],
-            'targHold_idx': self.timestamps[np.where(self.data == TARGHOLD)[0]],
-            'postTargHold_idx': self.timestamps[np.where(self.data == POSTTARGHOLD)[0]],
-            'reward_idx': self.timestamps[np.where(self.data == REWARD)[0]],
-            'breakFix_idx': self.timestamps[np.where(self.data == BREAKFIX)[0]]
+        if trial_indices_local.size == 0:
+            return None
+        
+        # This is the key difference - your original code processes ALL trial_indices
+        # not just the filtered ones
+        n_trials = len(trial_indices_local)
+        
+        # Initialize event structure for saccade training
+        sacc_events = {
+            'fpOn': np.full(n_trials, np.nan),
+            'fixation': np.full(n_trials, np.nan),
+            'stimOn': np.full(n_trials, np.nan),
+            'stimOff': np.full(n_trials, np.nan),
+            'saccOnset': np.full(n_trials, np.nan),
+            'reward': np.full(n_trials, np.nan),
+            'breakFix': np.full(n_trials, np.nan),
+            'goodtrial': np.full(n_trials, np.nan),
+            'condition': np.full(n_trials, np.nan),
+            'target_angle': np.full(n_trials, np.nan),
+            'target_ecc': np.full(n_trials, np.nan),
+            'block': np.full(n_trials, np.nan)
         }
+        
+        # Process each trial - using the original trial_indices_local
+        for i, trial_idx in enumerate(trial_indices_local):
+            # Define trial boundaries like your original code
+            trial_start = trial_indices_local[i-1] if i != 0 else (fix_indices[0] if fix_indices.size > 0 else 0)
+            trial_end = trial_idx  # Current trial marker
+            
+            # Extract trial segment
+            trial_data = data_block[trial_start:trial_end]
+            trial_times = time_block[trial_start:trial_end]
+            
+            # Extract event timestamps - matching your original logic exactly
+            # Use matching[-1] for STIMOFF, matching[0] for others
+            fpOn_idx = np.where(trial_data == FIX)[0]
+            sacc_events['fpOn'][i] = trial_times[fpOn_idx[0]] if fpOn_idx.size > 0 else np.nan
+            
+            fixation_idx = np.where(trial_data == FIXATION)[0]
+            sacc_events['fixation'][i] = trial_times[fixation_idx[0]] if fixation_idx.size > 0 else np.nan
+            
+            stimOn_idx = np.where(trial_data == STIMON)[0]
+            sacc_events['stimOn'][i] = trial_times[stimOn_idx[0]] if stimOn_idx.size > 0 else np.nan
+            
+            # STIMOFF uses last occurrence (matching[-1])
+            stimOff_idx = np.where(trial_data == STIMOFF)[0]
+            sacc_events['stimOff'][i] = trial_times[stimOff_idx[-1]] if stimOff_idx.size > 0 else np.nan
+            
+            sacc_idx = np.where(trial_data == SACC)[0]
+            sacc_events['saccOnset'][i] = trial_times[sacc_idx[0]] if sacc_idx.size > 0 else np.nan
+            
+            reward_idx = np.where(trial_data == REWARD)[0]
+            sacc_events['reward'][i] = trial_times[reward_idx[0]] if reward_idx.size > 0 else np.nan
+            
+            breakfix_idx = np.where(trial_data == BREAKFIX)[0]
+            sacc_events['breakFix'][i] = trial_times[breakfix_idx[0]] if breakfix_idx.size > 0 else np.nan
+            
+            # Extract condition code (target location)
+            # Your original: trial_ttls > 100
+            cond_idx = np.where(trial_data > 100)[0]
+            if cond_idx.size > 0:
+                cond_code = trial_data[cond_idx[0]] - 100
+                sacc_events['condition'][i] = cond_code
+                # Map condition to angle and eccentricity
+                if 0 <= cond_code < len(self.sacc_angles):
+                    sacc_events['target_angle'][i] = self.sacc_angles[int(cond_code)]
+                    sacc_events['target_ecc'][i] = self.sacc_eccs[int(cond_code)]
+            else:
+                sacc_events['condition'][i] = np.nan
+            
+            # Mark good trials - matching your original logic exactly
+            sacc_events['goodtrial'][i] = 0 if not np.isnan(sacc_events['breakFix'][i]) else 1
+            
+            # Store block info
+            sacc_events['block'][i] = block_nums[trial_idx]
+        
+        return sacc_events
 
-        # Initialize event_data dictionary
-        self.event_data = {key: np.full(self.trial_size, np.nan) for key in [
-            'fpOn', 'fixation', 'stimOn', 'stimOff',
-            'saccOnset', 'targHold', 'postTargHold','reward', 'breakFix',
-            'goodtrial', 'headingInd', 'modality', 'coherenceInd',
-            'deltaInd', 'choice', 'correct', 'PDW','block'
-        ]}
-
+    def process_dots3DMP_trials(self, block_indices, task_type):
+        """Process dots3DMP, dots3DMPtuning, and dots3DMP_fixedRT trials"""
+        data_block = self.filtered_full_words[block_indices]
+        time_block = self.filtered_timestamps[block_indices]
+        block_nums = self.filtered_ttl_blocks[block_indices]
+        
+        # Event codes
+        TRIAL, FIX, FIXATION, STIMONOFF, SACC, TARGHOLD, POSTTARGHOLD, REWARD, BREAKFIX = 1, 2, 3, 5, 6, 7, 8, 9, 10
+        
+        # Find trial starts
+        print(data_block[:3000])  # Debug: print first 3000 events to check for TRIAL code
+        trial_indices_local = np.where(data_block == TRIAL)[0]
+        
+        if trial_indices_local.size == 0:
+            return None
+            
+        idx_diffs = np.diff(trial_indices_local) > 10
+        valid_trials = np.concatenate(([trial_indices_local[0]], trial_indices_local[1:][idx_diffs]))
+        
+        n_trials = len(valid_trials)
+        
+        # Initialize event structure
+        mp_events = {
+            'fpOn': np.full(n_trials, np.nan),
+            'fixation': np.full(n_trials, np.nan),
+            'stimOn': np.full(n_trials, np.nan),
+            'stimOff': np.full(n_trials, np.nan),
+            'saccOnset': np.full(n_trials, np.nan),
+            'targHold': np.full(n_trials, np.nan),
+            'postTargHold': np.full(n_trials, np.nan),
+            'reward': np.full(n_trials, np.nan),
+            'breakFix': np.full(n_trials, np.nan),
+            'goodtrial': np.full(n_trials, np.nan),
+            'headingInd': np.full(n_trials, np.nan),
+            'modality': np.full(n_trials, np.nan),
+            'coherenceInd': np.full(n_trials, np.nan),
+            'deltaInd': np.full(n_trials, np.nan),
+            'choice': np.full(n_trials, np.nan),
+            'correct': np.full(n_trials, np.nan),
+            'PDW': np.full(n_trials, np.nan),
+            'block': np.full(n_trials, np.nan)
+        }
+        
+        # Get event indices for the block
+        fpOn_times = time_block[data_block == FIX]
+        fixation_times = time_block[data_block == FIXATION]
+        stimOnOff_times = time_block[data_block == STIMONOFF]
+        sacc_times = time_block[data_block == SACC]
+        targHold_times = time_block[data_block == TARGHOLD]
+        postTargHold_times = time_block[data_block == POSTTARGHOLD]
+        reward_times = time_block[data_block == REWARD]
+        breakFix_times = time_block[data_block == BREAKFIX]
+        
         vars_to_process = [
             ('deltaInd', 'PDW'),
             ('coherenceInd', 'correct'),
             ('modality', 'choice'),
             ('headingInd',)
         ]
-
-        fpOn_times = event_indices['fpOn_idx']
-
+        
         # Process each trial
-        for j in range(self.trial_size):
-            current_trial = self.timestamps[self.trial_indices[j]]
-            previous_trial = self.timestamps[0] if j == 0 else self.timestamps[self.trial_indices[j - 1]]
-
+        for j, trial_idx in enumerate(valid_trials):
+            current_trial = time_block[trial_idx]
+            previous_trial = time_block[0] if j == 0 else time_block[valid_trials[j - 1]]
             
+            # Extract fpOn
             fpOn_valid = fpOn_times[(fpOn_times > previous_trial) & (fpOn_times < current_trial)]
-            self.event_data['fpOn'][j] = fpOn_valid[0] if fpOn_valid.size > 0 else np.nan
+            mp_events['fpOn'][j] = fpOn_valid[0] if fpOn_valid.size > 0 else np.nan
             
+            refined_start = mp_events['fpOn'][j] if not np.isnan(mp_events['fpOn'][j]) else previous_trial
             
-            refined_start = self.event_data['fpOn'][j] if not np.isnan(self.event_data['fpOn'][j]) else previous_trial
-
-            for key, idx in event_indices.items():
-                if key == 'fpOn':
-                    continue
-                valid_idx = idx[(idx > refined_start) & (idx < current_trial)]
-                if key == 'stimOff_idx':
-                     self.event_data[key.replace("_idx", "")][j] = valid_idx[-1] if valid_idx.size > 0 else np.nan
-                else:
-                        self.event_data[key.replace("_idx", "")][j] = valid_idx[0] if valid_idx.size > 0 else np.nan
-
-            breakfix = self.event_data['breakFix'][j]
-
+            # Extract other events
+            fix_valid = fixation_times[(fixation_times > refined_start) & (fixation_times < current_trial)]
+            mp_events['fixation'][j] = fix_valid[0] if fix_valid.size > 0 else np.nan
+            
+            stimOnOff_valid = stimOnOff_times[(stimOnOff_times > refined_start) & (stimOnOff_times < current_trial)]
+            mp_events['stimOn'][j] = stimOnOff_valid[0] if stimOnOff_valid.size > 0 else np.nan
+            mp_events['stimOff'][j] = stimOnOff_valid[-1] if stimOnOff_valid.size > 0 else np.nan
+            
+            sacc_valid = sacc_times[(sacc_times > refined_start) & (sacc_times < current_trial)]
+            mp_events['saccOnset'][j] = sacc_valid[0] if sacc_valid.size > 0 else np.nan
+            
+            targHold_valid = targHold_times[(targHold_times > refined_start) & (targHold_times < current_trial)]
+            mp_events['targHold'][j] = targHold_valid[0] if targHold_valid.size > 0 else np.nan
+            
+            postTargHold_valid = postTargHold_times[(postTargHold_times > refined_start) & (postTargHold_times < current_trial)]
+            mp_events['postTargHold'][j] = postTargHold_valid[0] if postTargHold_valid.size > 0 else np.nan
+            
+            reward_valid = reward_times[(reward_times > refined_start) & (reward_times < current_trial)]
+            mp_events['reward'][j] = reward_valid[0] if reward_valid.size > 0 else np.nan
+            
+            breakFix_valid = breakFix_times[(breakFix_times > refined_start) & (breakFix_times < current_trial)]
+            mp_events['breakFix'][j] = breakFix_valid[0] if breakFix_valid.size > 0 else np.nan
+            
+            # Store block info
+            mp_events['block'][j] = block_nums[trial_idx]
+            
+            # Check if trial is good
+            breakfix = mp_events['breakFix'][j]
             required_events = ['fixation', 'stimOn', 'stimOff']
             
-
-            self.event_data['block'][j] = self.filtered_ttl_blocks[self.trial_indices[j]]
-
-            if np.isnan(breakfix) and all(not np.isnan(self.event_data[event][j]) for event in required_events):
-                self.event_data['goodtrial'][j] = 1
+            if np.isnan(breakfix) and all(not np.isnan(mp_events[event][j]) for event in required_events):
+                mp_events['goodtrial'][j] = 1
             else:
-                self.event_data['goodtrial'][j] = 0
-
+                mp_events['goodtrial'][j] = 0
                 for var_tuple in vars_to_process:
                     for var in var_tuple:
-                        self.event_data[var][j] = np.nan
+                        mp_events[var][j] = np.nan
                 continue
-
-            if j == self.trial_size - 1:
-                event_info = self.data[self.trial_indices[j]:]
+            
+            # Extract behavioral variables
+            if j == n_trials - 1:
+                event_info = data_block[trial_idx:]
             else:
-                event_info = self.data[self.trial_indices[j]:self.trial_indices[j + 1]]
-
-            event_info -= 70
-
-            for idx, (var1, *var2) in enumerate(vars_to_process):
+                event_info = data_block[trial_idx:valid_trials[j + 1]]
+            
+            event_info = event_info.copy() - 70
+            
+            for idx, var_tuple in enumerate(vars_to_process):
+                var1 = var_tuple[0]
+                var2 = var_tuple[1] if len(var_tuple) > 1 else None
+                
                 if idx > 0:
                     event_info -= 10
-                if "headingInd" in var1 or any("headingInd" in v for v in var2):
+                    
+                if "headingInd" in var1:
                     new_idx = (event_info <= 20) & (event_info >= 0)
                 else:
                     new_idx = (event_info <= 10) & (event_info >= 0)
-
+                
                 new_info = event_info[new_idx]
-
+                
                 if new_info.size > 0:
-                    self.event_data[var1][j] = new_info[0]
+                    mp_events[var1][j] = new_info[0]
                     if var2:
-                        self.event_data[var2[0]][j] = new_info[-1]
-                        if self.event_data['breakFix'][j] == 0:
-                            self.event_data[var2[0]][j] = np.nan
+                        mp_events[var2][j] = new_info[-1]
+                        if mp_events['breakFix'][j] == 0:
+                            mp_events[var2][j] = np.nan
                 else:
-                    self.event_data[var1][j] = np.nan
+                    mp_events[var1][j] = np.nan
                     if var2:
-                        self.event_data[var2[0]][j] = np.nan
+                        mp_events[var2][j] = np.nan
         
+        return mp_events
 
-    def save_to_mat(self):
-        """ Saves event data to a MATLAB `.mat` file and reports trial counts. """
-        save_path = os.path.join(self.data_path, f"{self.subject}{self.date}dots3DMP.mat")
-        par_type = ['dots3DMP', 'dots3DMPtuning']
-
-
-        if os.path.exists(save_path):
-            mat_contents = scipy.io.loadmat(save_path, simplify_cells=True)
-            data = mat_contents['data']
-        else:
-            data = {}
-            print("Generating a new file.")
-
-        for p_type in par_type:
-            trial_2_save = self.trial_type == p_type
-            trial_data = {}
+    def process_trials(self):
+        """Processes all trials and separates by task type"""
+        self.data = self.filtered_full_words.copy()
+        self.timestamps = self.filtered_timestamps.copy()
+        
+        # Get unique blocks
+        total_blocks = np.unique(self.filtered_ttl_blocks)
+        self.block_type_array = np.full(self.filtered_ttl_blocks.shape, '', dtype='O')
+        
+        # Group blocks by task type
+        task_blocks = {
+            'dots3DMP': [],
+            'dots3DMPtuning': [],
+            'dots3DMP_fixedRT': [],
+            'SaccadeTraining': []
+        }
+        
+        for block in total_blocks:
+            if not np.isin(block, self.pldaps_filetimes).any():
+                continue
             
-            for key in self.event_data:
-                if p_type == 'dots3DMPtuning' and key in ['choice', 'correct', 'PDW']:
-                    continue
-                trial_data[key] = self.event_data[key][trial_2_save]
-
-            total_trials = np.size(self.event_data['goodtrial'][trial_2_save])
-            good_trials = int(np.sum(self.event_data['goodtrial'][trial_2_save]))
-
-            data[p_type] = {'events': trial_data}
+            matched_idx = np.where(block == self.pldaps_filetimes)[0]
+            corresponding_par = self.par[matched_idx[0]].strip()
             
-            print(f"{p_type}: Total Trials = {total_trials}, Good Trials = {good_trials}")
+            block_indices = np.where(self.filtered_ttl_blocks == block)[0]
+            self.block_type_array[block_indices] = corresponding_par
+            
+            if corresponding_par in task_blocks:
+                task_blocks[corresponding_par].append(block_indices)
+        
+        # Process each task type
+        self.event_data = {}
+        
+        for task_type, blocks_list in task_blocks.items():
+            if len(blocks_list) == 0:
+                continue
+                
+            print(f"Processing {task_type}: {len(blocks_list)} blocks")
+            
+            all_task_events = []
+            for block_indices in blocks_list:
+                if task_type == 'SaccadeTraining':
+                    task_events = self.process_saccade_trials(block_indices)
+                else:
+                    task_events = self.process_dots3DMP_trials(block_indices, task_type)
+                
+                if task_events is not None:
+                    all_task_events.append(task_events)
+            
+            # Merge all blocks of the same task type (INDENTED INSIDE THE LOOP!)
+            if all_task_events:
+                merged_events = {}
+                for key in all_task_events[0].keys():
+                    merged_events[key] = np.concatenate([evt[key] for evt in all_task_events])
+                
+                self.event_data[task_type] = merged_events
+                print(f"{task_type}: {len(merged_events['goodtrial'])} trials, "
+                    f"{np.sum(merged_events['goodtrial'])} good trials")
+            else:
+                print(f"⚠ {task_type}: No valid trials found across {len(blocks_list)} blocks")
 
-        scipy.io.savemat(save_path, {'data': data})
-        print(f"Data saved at '{save_path}'")
-
+    def save_events_to_mat(self):
+            """Saves event data to MATLAB .mat file, organized by task type"""
+            # Use same naming convention as CreateUnitStruct
+            if self.probe_name in ['ProbeA']:
+                save_path = os.path.join(self.data_path, f"{self.subject}{self.date}dots3DMP.mat")
+            else:
+                save_path = os.path.join(self.data_path, f"{self.subject}{self.date}dots3DMP_{self.probe_name}.mat")
+            
+            if os.path.exists(save_path):
+                mat_contents = scipy.io.loadmat(save_path, simplify_cells=True)
+                data_dict = mat_contents['data']
+                print(f"Loading existing file with keys: {list(data_dict.keys())}")
+            else:
+                data_dict = {}
+                print("Generating a new file.")
+            
+            for task_type, events in self.event_data.items():
+                if task_type not in data_dict or not isinstance(data_dict[task_type], dict):
+                    data_dict[task_type] = {}
+                
+                data_dict[task_type]['events'] = events
+                print(f"  {task_type} now contains: {list(data_dict[task_type].keys())}")
+            
+            scipy.io.savemat(save_path, {'data': data_dict})
+            print(f"Event data saved at '{save_path}'")
 
 class CreateUnitStruct:
-    def __init__(self, directory, subject, date, kilosort):
+    def __init__(self, directory, subject, date, kilosort, AP_name='ProbeA'):
         self.directory = directory
         self.subject = subject
         self.date = date
         self.kilosort = kilosort
+        self.AP_name = AP_name
         self.data_path = os.path.join(directory, date)
         self.kilosort_path = os.path.join(directory, date, kilosort)
         
@@ -626,8 +827,13 @@ class CreateUnitStruct:
         # self.channel_positions = np.load(os.path.join(self.kilosort_path, f"channel_positions.npy"))
         self.cluster_group = pd.read_csv(os.path.join(self.kilosort_path, "cluster_info.tsv"), sep='\t')
 
-        self.timestamps = np.load(os.path.join(self.data_path, f"{subject}{date}dots3DMP_APtimestamps.npy"))
-        self.AP_blocks = np.load(os.path.join(self.data_path, f"{subject}{date}dots3DMP_APblocks.npy"))
+        # Apply naming convention based on AP_name
+        if AP_name in ['ProbeA']:
+            self.timestamps = np.load(os.path.join(self.data_path, f"{subject}{date}dots3DMP_APtimestamps.npy"))
+            self.AP_blocks = np.load(os.path.join(self.data_path, f"{subject}{date}dots3DMP_APblocks.npy"))
+        else:
+            self.timestamps = np.load(os.path.join(self.data_path, f"{subject}{date}dots3DMP_AP{AP_name}timestamps.npy"))
+            self.AP_blocks = np.load(os.path.join(self.data_path, f"{subject}{date}dots3DMP_AP{AP_name}blocks.npy"))
 
         self.pldaps_filetimes, self.par, self.par_type = self.check_trial_par()
 
@@ -653,7 +859,6 @@ class CreateUnitStruct:
             } for par_type in self.par_type
         }
 
-
         for par_type in self.par_type:
 
             trial_indices = [i for i, p in enumerate(self.par) if p == par_type]
@@ -670,10 +875,9 @@ class CreateUnitStruct:
             depth = []
             group = []
 
-   
             for i, cluster in enumerate(uniq_spike_clusters):
-                idx = np.where((self.spike_clusters == cluster) )[0]
-               
+                idx = np.where((self.spike_clusters == cluster))[0]
+            
                 if len(idx) == 0:
                     continue
                 unit_kilo_frames = self.spike_time[idx]
@@ -703,29 +907,44 @@ class CreateUnitStruct:
 
         self.unit_struct = unit_struct
 
-        
-
     def save_units_to_mat(self):
-        """ Saves unit data to a MATLAB `.mat` file and reports trial counts. """
-        save_path = os.path.join(self.data_path, f"{self.subject}{self.date}dots3DMP.mat")
-
-        if os.path.exists(save_path):
-            mat_contents = scipy.io.loadmat(save_path, simplify_cells=True)
-            data_dict = mat_contents['data']
+        """ Saves unit data to a MATLAB `.mat` file """
+        if self.AP_name in ['ProbeA']:
+            save_path = os.path.join(self.data_path, f"{self.subject}{self.date}dots3DMP.mat")
         else:
-            data_dict = {}
-            print("Generating a new file.")
+            save_path = os.path.join(self.data_path, f"{self.subject}{self.date}dots3DMP_{self.AP_name}.mat")
 
+        # Robust loading of existing file
+        data_dict = {}
+        if os.path.exists(save_path):
+            try:
+                mat_contents = scipy.io.loadmat(save_path, simplify_cells=True)
+                if 'data' in mat_contents:
+                    data_dict = mat_contents['data']
+                    # Ensure it's a dict (sometimes MATLAB saves weird structures)
+                    if not isinstance(data_dict, dict):
+                        data_dict = {}
+                    print(f"✓ Loaded existing file with keys: {list(data_dict.keys())}")
+                else:
+                    print("⚠ File exists but no 'data' field found, starting fresh")
+            except Exception as e:
+                print(f"⚠ Error loading file: {e}, starting fresh")
+        else:
+            print("Creating new file")
 
-    
+        # Update with unit data (preserves existing keys like 'events', 'eyelink')
         for p_type in self.par_type:
-            if p_type not in data_dict or not isinstance(data_dict[p_type], dict):
+            if p_type not in data_dict:
                 data_dict[p_type] = {}
-
+            elif not isinstance(data_dict[p_type], dict):
+                data_dict[p_type] = {}
+            
             data_dict[p_type]['unit'] = self.unit_struct[p_type]
+            print(f"  {p_type} now contains: {list(data_dict[p_type].keys())}")
 
-        scipy.io.savemat(save_path, {'data': data_dict})
-        print(f"Data saved at '{save_path}'")
+        # Save with compression (smaller files)
+        scipy.io.savemat(save_path, {'data': data_dict}, do_compression=True)
+        print(f"✓ Unit data saved at '{save_path}'")
 
 class CreateEyeXYStruct:
     def __init__(self, directory, subject, date):
@@ -791,26 +1010,29 @@ class CreateEyeXYStruct:
 
     def save_eyeXY_to_mat(self):
         """ Saves eyeXY data to a MATLAB `.mat` file and reports trial counts. """
-        save_path = os.path.join(self.data_path, f"{self.subject}{self.date}dots3DMP.mat")
+        # Use same naming convention as CreateUnitStruct
+        if self.probe_name in ['ProbeA']:
+            save_path = os.path.join(self.data_path, f"{self.subject}{self.date}dots3DMP.mat")
+        else:
+            save_path = os.path.join(self.data_path, f"{self.subject}{self.date}dots3DMP_{self.probe_name}.mat")
 
         if os.path.exists(save_path):
             mat_contents = scipy.io.loadmat(save_path, simplify_cells=True)
             data_dict = mat_contents['data']
+            print(f"Loading existing file with keys: {list(data_dict.keys())}")
         else:
             data_dict = {}
             print("Generating a new file.")
 
-
-    
         for p_type in self.par_type:
             if p_type not in data_dict or not isinstance(data_dict[p_type], dict):
                 data_dict[p_type] = {}
 
             data_dict[p_type]['eyelink'] = self.eyeXY_struct[p_type]
+            print(f"  {p_type} now contains: {list(data_dict[p_type].keys())}")
 
         scipy.io.savemat(save_path, {'data': data_dict})
-        print(f"Data saved at '{save_path}'")
-
+        print(f"EyeXY data saved at '{save_path}'")
     
 
 

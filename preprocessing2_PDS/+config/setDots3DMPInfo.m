@@ -10,7 +10,29 @@ switch Info.subject
     case 'zarya'
         %% === Unit Info ===
         unitInfo.unit_profile = 'good';  % 'good', 'all', etc.
-
+        
+        switch Info.session_date
+            case '20250523'
+                unitInfo.area_map = struct('MST', [0, 4000], 'VPS', [4001, 8000], 'MT', [], 'dual', [0, 8000]);
+            case '20250602'
+                unitInfo.area_map = struct('MST', [0, 3500], 'VPS', [3501, 8000], 'MT', [], 'dual', [0, 8000]);
+            case '20250702'
+                unitInfo.area_map = struct('MST', [1300, 7000], 'VPS', [7000, 8000], 'MT', [0, 1300], 'dual', [0, 8000]);
+            case '20250710'
+                unitInfo.area_map = struct('MST', [0, 4000], 'VPS', [4001, 8000], 'MT', [], 'dual', [0, 8000]);
+            case '20250501'
+                unitInfo.area_map = struct('MST', [0, 3500], 'VPS', [3501, 8000], 'MT', [], 'dual', [0, 8000]);
+            case '20250417'
+                unitInfo.area_map = struct('MST', [1501, 7000], 'VPS', [7001, 10000], 'MT', [0, 1500], 'dual', [0, 10000]);
+            case '20250306'
+                unitInfo.area_map = struct('MST', [1001, 5500], 'VPS', [5501, 10000], 'MT', [0, 1000], 'dual', [0, 10000]);
+            case '20250411'
+                unitInfo.area_map = struct('MST', [0, 3000], 'VPS', [3001, 8000], 'MT', [], 'dual', [0, 8000]);
+            case '20260417'
+                 unitInfo.area_map = nan;
+            otherwise
+                error('No area map found for session date: %s', session_date_str);
+        end
         % Note: unitInfo.plot_indices will be set after loading data
 
         %% === Event Info (Main Analysis) ===
@@ -42,7 +64,7 @@ switch Info.subject
 
         %% === Time Info (Main Analysis) ===
         timeInfo.offset = 0.025;
-        timeInfo.binSize = 0.02;
+        timeInfo.binSize = 0.01;
         timeInfo.alignEvent = {'stimOn','saccOnset','postTargHold'};
         timeInfo.plotname = {'Stim On','Choice', 'PDW'};
         timeInfo.center_start = [-0.1, -0.6, -0.6];
@@ -52,7 +74,7 @@ switch Info.subject
 
         %% === Time Info (Tuning Analysis) ===
         tuntimeInfo.offset = 0.025;
-        tuntimeInfo.binSize = 0.02;
+        tuntimeInfo.binSize = 0.01;
         tuntimeInfo.alignEvent = {'stimOn'};
         tuntimeInfo.plotname = {'Stim On'};
         tuntimeInfo.sigma = 0;

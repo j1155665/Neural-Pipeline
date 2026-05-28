@@ -5,6 +5,7 @@ alignEvent = timeInfo.alignEvent;
 center_start = timeInfo.center_start;
 center_stop = timeInfo.center_stop;
 head_Info = eventInfo.name(3);
+
 dataAnals = dataStruct(session_num).data.dots3DMP.data_spkrate;
 unit_num = dataStruct(session_num).data.dots3DMP.unit.cluster_id(iUnit);
 mod = dataStruct(session_num).data.dots3DMP.events.modality;
@@ -13,49 +14,80 @@ del = dataStruct(session_num).data.dots3DMP.events.delta;
 headingInd = dataStruct(session_num).data.dots3DMP.events.(head_Info{1});
 headings = dataStruct(session_num).data.dots3DMP.events.heading;
 choice = dataStruct(session_num).data.dots3DMP.events.choice;
+goodtrial = dataStruct(session_num).data.dots3DMP.events.goodtrial;
+correct = dataStruct(session_num).data.dots3DMP.events.correct;
+rt = dataStruct(session_num).data.dots3DMP.events.RT';
 
 heading_values = unique(headings);
 heading_values = heading_values(~isnan(heading_values));
 
-condition_labels = {'Vestibular', 'Visual (High Coh)', 'Combined (High Coh)'};
+% Merge similar heading values by rounding to 1 decimal place
+heading_values_rounded = round(heading_values, 1);
+[unique_rounded, ~, ic] = unique(heading_values_rounded);
+% For each unique rounded value, take the mean of original values
+heading_values_merged = arrayfun(@(x) mean(heading_values(heading_values_rounded == x)), unique_rounded);
+
+condition_labels = {'Vestibular', 'Visual (Low Coh)', 'Visual (High Coh)', 'Combined (Low Coh)', 'Combined (High Coh)'};
 condition_indices = {
     @(m,c) m==1,
+    @(m,c) m==2 & c==1,
     @(m,c) m==2 & c==2,
+    @(m,c) m==3 & c==1,
     @(m,c) m==3 & c==2
 };
-colors = {'k', 'r', 'b'};
+
+% Color scheme: 
+% Vestibular: black
+% Visual: red (high coh) / light red (low coh)
+% Combined: blue (high coh) / light blue (low coh)
+colors = {
+    [0, 0, 0],           % Black for Vestibular
+    [1, 0.3, 0.3],       % Light red for Visual Low Coh
+    [1, 0, 0],           % Red for Visual High Coh
+    [0.3, 0.3, 1],       % Light blue for Combined Low Coh
+    [0, 0, 1]            % Blue for Combined High Coh
+};
 
 figure;
-set(gcf, 'Position', [100, 100, 1400, 400]);
+set(gcf, 'Position', [100, 100, 1800, 600]);
 
 sgtitle(sprintf('unit %d, Tuning Curves Split by Choice, depth %d', unit_num, ...
     dataStruct(session_num).data.dots3DMP.unit.depth(iUnit)));
 
-align_idx = find(strcmp(alignEvent, 'saccade'));
+align_idx = find(strcmp(alignEvent, 'stimOn'));
 if isempty(align_idx)
     align_idx = 1;
 end
 
 timeAxis = center_start(align_idx):binSize:center_stop(align_idx);
-yAxis = timeAxis * 1000;
+
 field_name = alignEvent{align_idx};
 psth = dataAnals.(field_name)(:, iUnit);
 
-time_window = yAxis >= -200 & yAxis <= 200;
+
 
 y_lim = 0;
 
-for cond = 1:3
-    subplot(1, 3, cond);
+for cond = 1:5
+    subplot(2, 3, cond);
     hold on;
     
     mean_fr = nan(1, 7);
     fr_choice_left = nan(1, 7);
     fr_choice_right = nan(1, 7);
+
+    
+    cond_idx = condition_indices{cond}(mod, coh) & del'==0 & ...
+            ~cellfun(@(x) any(isnan(x)), psth)' & goodtrial ==1;
+    valid_rt = rt(cond_idx);  
+    mean_rt = nanmean(valid_rt);
+    yAxis = (timeAxis -mean_rt) * 1000;
+    time_window = yAxis >= -400 & yAxis <= -200;
     
     for log = 1:7
         idx_all = condition_indices{cond}(mod, coh) & headingInd==log & del'==0 & ...
-            ~cellfun(@(x) any(isnan(x)), psth)';
+            ~cellfun(@(x) any(isnan(x)), psth)' & goodtrial ==1;
+        
         
         if any(idx_all)
             data = cell2mat(psth(idx_all));
@@ -76,21 +108,21 @@ for cond = 1:3
     end
     
     valid_mean = ~isnan(mean_fr);
-    plot(heading_values(valid_mean), mean_fr(valid_mean), '-o', 'Color', colors{cond}, 'LineWidth', 2, ...
+    plot(heading_values_merged(valid_mean), mean_fr(valid_mean), '-o', 'Color', colors{cond}, 'LineWidth', 2, ...
         'MarkerSize', 8, 'MarkerFaceColor', colors{cond});
     
     valid_left = ~isnan(fr_choice_left);
-    plot(heading_values(valid_left), fr_choice_left(valid_left), '--^', 'Color', colors{cond}, 'LineWidth', 1.5, ...
+    plot(heading_values_merged(valid_left), fr_choice_left(valid_left), '--<', 'Color', colors{cond}, 'LineWidth', 1.5, ...
         'MarkerSize', 8, 'MarkerFaceColor', colors{cond}, 'MarkerEdgeColor', colors{cond});
     
     valid_right = ~isnan(fr_choice_right);
-    plot(heading_values(valid_right), fr_choice_right(valid_right), '--v', 'Color', colors{cond}, 'LineWidth', 1.5, ...
+    plot(heading_values_merged(valid_right), fr_choice_right(valid_right), '-->', 'Color', colors{cond}, 'LineWidth', 1.5, ...
         'MarkerSize', 8, 'MarkerFaceColor', colors{cond}, 'MarkerEdgeColor', colors{cond});
     
     xlabel('Heading (deg)');
     ylabel('Firing Rate (spikes/s)');
     title(condition_labels{cond});
-    xlim([min(heading_values) max(heading_values)]);
+    xlim([min(heading_values_merged) max(heading_values_merged)]);
     grid on;
     
     current_max = max([mean_fr(valid_mean), fr_choice_left(valid_left), fr_choice_right(valid_right)]);
@@ -101,12 +133,12 @@ for cond = 1:3
     hold off;
 end
 
-for cond = 1:3
-    subplot(1, 3, cond);
+for cond = 1:5
+    subplot(2, 3, cond);
     ylim([0 y_lim*1.1]);
 end
 
-subplot(1, 3, 1);
+subplot(2, 3, 1);
 lgd = legend({'Mean FR', 'Left Choice', 'Right Choice'}, 'Location', 'best');
 
 if y_lim >= 1.5

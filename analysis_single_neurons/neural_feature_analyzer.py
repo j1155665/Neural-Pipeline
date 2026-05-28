@@ -8,42 +8,35 @@ warnings.filterwarnings('ignore')
 
 class NeuralFeatureAnalyzer:
     def __init__(self, session_data, subject, date, alignment='stimOn', session_position=None, relative_position=None, is_tuning=False,
-                 session_guidetube_depth=None, relative_guidetube_depth=None, center_position=(4, 4), corrected_depth=22, mean_RT=None, analysis_window=[-200, 0]):
+            session_guidetube_depth=None, relative_guidetube_depth=None, center_position=(4, 4), corrected_depth=22, mean_RT=None, analysis_window=[-400, -200]):
+    
+        # Basic session information
         self.session_data = session_data
         self.subject = subject
         self.date = date
         self.alignment = alignment
         self.config = session_data['config']
-        self.mean_RT = mean_RT
+        
+        # Task type flags
         self.is_tuning = is_tuning
+        self.mean_RT = mean_RT
         self.is_RT = True if mean_RT is not None else False
-
+        
+        # Time window parameter
+        # For Modes 2 & 3 (RT-based): fixed [-200, 0]ms relative to mean RT per modality
+        # For Mode 4 (saccade-aligned): fixed [-200, 0]ms relative to saccade onset
+        self.analysis_window = analysis_window
+        
+        # Load appropriate data based on task type
         if self.is_tuning:
             self.behavior = session_data['behavior_tuning_converted']
             self.spikes_data = session_data['tuning_spikes_data'] 
             self.time_info = session_data['time_info_tuning']
             self.time_axes = session_data['time_axes_tuning']
-            self.stim_on_t = session_data['time_info']['trial_start_t']
-        else:
-            self.behavior = session_data['behavior_converted']
-            self.spikes_data = session_data['spikes_data']
-            self.time_info = session_data['time_info']
-            self.time_axes = session_data['time_axes_dots3DMP']
-            # For Mode 4 (Regular + RT), we need stim_on_t
-            if self.is_RT:
-                self.stim_on_t = session_data['time_info']['trial_start_t']
+            self.time_zero_shift_s = session_data['time_info']['trial_start_t'] 
 
-        self.unit_info = session_data['unit_info']
-        self.units_data = session_data['units_data']
-        
-        self.session_position = session_position or center_position
-        self.relative_position = relative_position or (0, 0)
-        self.center_position = center_position
-        
-        self.session_guidetube_depth = session_guidetube_depth or (0, 0)
-        self.relative_guidetube_depth = relative_guidetube_depth or 0.0
-        
-        if self.is_tuning:
+            
+            # Tuning-specific time window parameters (for Mode 1)
             self.tuning_time_info = {
                 'offset': 0.025,
                 'bin_size': 0.02,
@@ -61,14 +54,47 @@ class NeuralFeatureAnalyzer:
             self.tuning_window_ms = 600
             self.tuning_slide_ms = 300
         else:
-            self.analysis_window = analysis_window
+            self.behavior = session_data['behavior_converted']
+            self.spikes_data = session_data['spikes_data']
+            self.time_info = session_data['time_info']
+            self.time_axes = session_data['time_axes_dots3DMP']
+            self.time_zero_shift_s = 0
         
+        # Unit information
+        self.unit_info = session_data['unit_info']
+        self.units_data = session_data['units_data']
+        
+        # Spatial positioning
+        self.center_position = center_position
+        self.session_position = session_position if session_position is not None else center_position
+        self.relative_position = relative_position if relative_position is not None else (0, 0)
+        
+        # Depth information
+        self.session_guidetube_depth = session_guidetube_depth if session_guidetube_depth is not None else (0, 0)
+        self.relative_guidetube_depth = relative_guidetube_depth if relative_guidetube_depth is not None else 0.0
+        
+        # Initialize storage for unit features
         self.unit_features = []
         self.n_units = self._get_n_units()
         
+        # Determine which mode we're in
+        if self.is_tuning and not self.is_RT:
+            mode_description = "Mode 1: Tuning with sliding windows"
+        elif self.is_tuning and self.is_RT:
+            mode_description = "Mode 2: Tuning with mean RT-based fixed windows"
+        elif not self.is_tuning and self.is_RT:
+            mode_description = "Mode 3: Regular task with mean RT-based fixed windows (stimOn aligned)"
+        else:
+            mode_description = "Mode 4: Regular task with saccade-aligned fixed windows"
+        
+        # Debug output
         print(f"Debug: Session {self.date} at position {self.session_position} (relative: {self.relative_position})")
         print(f"Debug: Guidetube depth: {self.session_guidetube_depth}, relative: {self.relative_guidetube_depth:.3f} mm")
-        print(f"Debug: Alignment: {self.alignment}, Is tuning: {self.is_tuning}, Is RT: {self.is_RT}")
+        print(f"Debug: {mode_description}")
+        print(f"Debug: Alignment: {self.alignment}")
+        if self.is_RT and self.mean_RT is not None:
+            print(f"Debug: Mean RTs provided: {self.mean_RT}")
+        print(f"Debug: Analysis window: {self.analysis_window}ms")
         print(f"Debug: Number of units determined: {self.n_units}")
     
     def _get_n_units(self):
@@ -101,21 +127,23 @@ class NeuralFeatureAnalyzer:
             return 0
 
     def get_neurometric_windows(self):
-        # Generate 800ms sliding windows with 400ms slide for neurometric analysis
+        """For Mode 1 (Tuning sliding windows)"""
         try:
             time_axis = self.time_axes[self.alignment]
             bin_size_ms = self.tuning_time_info['bin_size'] * 1000
             window_bins = int(self.neurometric_window_ms / bin_size_ms)
             slide_bins = int(self.neurometric_slide_ms / bin_size_ms)
 
-            t_zero_idx = np.argmin(np.abs(time_axis))
-            t_end = time_axis[-1] - 0.2
-            t_end_idx = np.argmin(np.abs(time_axis - t_end))
+            # Find stimulus onset (0ms) and offset (2200ms)
+            t_stim_on_idx = np.argmin(np.abs(time_axis))  # 0ms
+            t_stim_off = self.tuning_time_info['center_stop'][0]  # 2.2s = 2200ms
+            t_stim_off_idx = np.argmin(np.abs(time_axis - t_stim_off))
             
             windows = []
-            start_idx = t_zero_idx
+            start_idx = t_stim_on_idx  # Start first window at stimulus onset
             
-            while start_idx + window_bins <= t_end_idx:
+            # Slide until window END reaches stimulus offset
+            while start_idx + window_bins <= t_stim_off_idx:
                 end_idx = start_idx + window_bins
                 start_time_ms = time_axis[start_idx] * 1000
                 end_time_ms = time_axis[end_idx] * 1000
@@ -130,6 +158,10 @@ class NeuralFeatureAnalyzer:
                 })
                 
                 start_idx += slide_bins
+            
+            print(f"    Created {len(windows)} neurometric windows")
+            print(f"    First window: [{windows[0]['start_time_ms']:.0f}, {windows[0]['end_time_ms']:.0f}]ms")
+            print(f"    Last window: [{windows[-1]['start_time_ms']:.0f}, {windows[-1]['end_time_ms']:.0f}]ms")
             
             return windows
             
@@ -138,21 +170,23 @@ class NeuralFeatureAnalyzer:
             return []
 
     def get_tuning_windows(self):
-        # Generate 600ms sliding windows with 300ms slide for tuning analysis
+        """For Mode 1 (Tuning sliding windows)"""
         try:
             time_axis = self.time_axes[self.alignment]
             bin_size_ms = self.tuning_time_info['bin_size'] * 1000
             window_bins = int(self.tuning_window_ms / bin_size_ms)
             slide_bins = int(self.tuning_slide_ms / bin_size_ms)
 
-            t_zero_idx = np.argmin(np.abs(time_axis))
-            t_end = time_axis[-1] - 0.2
-            t_end_idx = np.argmin(np.abs(time_axis - t_end))
+            # Find stimulus onset (0ms) and offset (2200ms)
+            t_stim_on_idx = np.argmin(np.abs(time_axis))  # 0ms
+            t_stim_off = self.tuning_time_info['center_stop'][0]  # 2.2s = 2200ms
+            t_stim_off_idx = np.argmin(np.abs(time_axis - t_stim_off))
             
             windows = []
-            start_idx = t_zero_idx
+            start_idx = t_stim_on_idx  # Start first window at stimulus onset
             
-            while start_idx + window_bins <= t_end_idx:
+            # Slide until window END reaches stimulus offset
+            while start_idx + window_bins <= t_stim_off_idx:
                 end_idx = start_idx + window_bins
                 start_time_ms = time_axis[start_idx] * 1000
                 end_time_ms = time_axis[end_idx] * 1000
@@ -168,63 +202,115 @@ class NeuralFeatureAnalyzer:
                 
                 start_idx += slide_bins
             
+            print(f"    Created {len(windows)} tuning windows")
+            print(f"    First window: [{windows[0]['start_time_ms']:.0f}, {windows[0]['end_time_ms']:.0f}]ms")
+            print(f"    Last window: [{windows[-1]['start_time_ms']:.0f}, {windows[-1]['end_time_ms']:.0f}]ms")
+            
             return windows
             
         except Exception as e:
             print(f"Error in get_tuning_windows: {e}")
             return []
 
-    def get_time_window_indices_regular(self):
-        # Get time window indices for regular task (-200 to 0ms before saccade)
+    def get_time_window_indices_fixed_saccade(self):
+        """
+        Get fixed time window indices for Mode 4 (Regular task, saccade-aligned)
+        Returns window relative to saccade onset (e.g., [-200, 0]ms)
+        """
         try:
             time_axis = self.time_axes[self.alignment]
-            start_idx = np.argmin(np.abs(time_axis*1000 - self.analysis_window[0]))
+            start_idx = np.argmin(np.abs(time_axis*1000 - self.analysis_window[0])) 
             end_idx = np.argmin(np.abs(time_axis*1000 - self.analysis_window[1]))
+            
+            print(f"    Mode 4 window: [{time_axis[start_idx]*1000:.1f}, {time_axis[end_idx]*1000:.1f}]ms relative to saccade")
+            
             return start_idx, end_idx
             
         except Exception as e:
-            print(f"Error in get_time_window_indices_regular: {e}")
+            print(f"Error in get_time_window_indices_fixed_saccade: {e}")
             return 0, 10
-        
+
     def get_time_window_indices_RT(self, modality):
-        # Get time window based on mean RT for each modality (±100ms around mean RT)
-        # Used for both tuning and regular tasks when is_RT=True
+        """
+        Get time window indices for Modes 2 & 3 (RT-based)
+        Returns fixed window (e.g., [-200, 0]ms) relative to mean RT for each modality
+        
+        Parameters:
+        -----------
+        modality : int or str
+            For tuning (Mode 2): 1, 2, or 3
+            For regular (Mode 3): 'ves', 'vis', 'vis_low', 'comb', 'comb_low'
+        
+        Returns:
+        --------
+        tuple : (start_idx, end_idx, center_ms, mean_rt_ms)
+        """
         try:
             time_axis = self.time_axes[self.alignment]
             
-            if modality == 1:
-                rt_key = 'mod1_coh1'
-            elif modality == 2:
-                rt_key = 'mod2_coh2'
-            elif modality == 3:
-                rt_key = 'mod3_coh2'
+            # Map modality to RT key
+            if self.is_tuning:
+                # Mode 2: Tuning RT
+                if modality == 1:
+                    rt_key = 'mod1_coh1'
+                elif modality == 2:
+                    rt_key = 'mod2_coh2'
+                elif modality == 3:
+                    rt_key = 'mod3_coh2'
+                else:
+                    print(f"Unknown tuning modality: {modality}")
+                    return 0, 10, 0, 0
             else:
-                print(f"Unknown modality: {modality}")
-                return 0, 10
+                # Mode 3: Regular RT
+                if modality == 'ves':
+                    rt_key = 'mod1_coh1'
+                elif modality == 'vis':
+                    rt_key = 'mod2_coh2'
+                elif modality == 'vis_low':
+                    rt_key = 'mod2_coh1'
+                elif modality == 'comb':
+                    rt_key = 'mod3_coh2'
+                elif modality == 'comb_low':
+                    rt_key = 'mod3_coh1'
+                else:
+                    print(f"Unknown regular modality: {modality}")
+                    return 0, 10, 0, 0
             
+            # Get mean RT for this modality
             if rt_key not in self.mean_RT:
                 print(f"Mean RT not found for {rt_key}")
-                return 0, 10
-                
-            mean_rt_ms = (self.mean_RT[rt_key] + self.stim_on_t) * 1000
-            window_start = mean_rt_ms - 100
-            window_end = mean_rt_ms + 100
+                return 0, 10, 0, 0
             
-            start_idx = np.argmin(np.abs(time_axis * 1000 - window_start))
-            end_idx = np.argmin(np.abs(time_axis * 1000 - window_end))
+            # Calculate mean RT in milliseconds
+            # For both Mode 2 and Mode 3, alignment is 'stimOn', so we calculate RT from stimulus onset
+            mean_rt_ms = (self.mean_RT[rt_key] + self.time_zero_shift_s) * 1000
             
+            # Define window: analysis_window (e.g., [-200, 0]) relative to mean RT
+            # Example: if mean_RT = 800ms, analysis_window = [-200, 0]
+            #          then window is [600ms, 800ms] after stimulus
+            window_start_ms = mean_rt_ms + self.analysis_window[0]  # e.g., 800 + (-200) = 600ms
+            window_end_ms = mean_rt_ms + self.analysis_window[1]    # e.g., 800 + 0 = 800ms
+            
+            # Find indices in the time axis
+            start_idx = np.argmin(np.abs(time_axis * 1000 - window_start_ms))
+            end_idx = np.argmin(np.abs(time_axis * 1000 - window_end_ms))
+            
+            # Calculate center time for reporting
+            center_ms = (window_start_ms + window_end_ms) / 2
+            
+            # Ensure valid indices
             if start_idx >= end_idx:
-                print(f"Invalid time window indices for modality {modality}: start={start_idx}, end={end_idx}")
-                return 0, 10
-                
-            return start_idx, end_idx
+                print(f"Invalid time window indices for {rt_key}: start={start_idx}, end={end_idx}")
+                return 0, 10, 0, 0
+            
+            return start_idx, end_idx, center_ms, mean_rt_ms
             
         except Exception as e:
             print(f"Error in get_time_window_indices_RT for modality {modality}: {e}")
-            return 0, 10
+            return 0, 10, 0, 0
 
     def get_baseline_window_tuning(self):
-        # Get baseline time window (start to t=0) for tuning data
+        """For Mode 1 baseline (pre-stimulus)"""
         try:
             time_axis = self.time_axes[self.alignment]
             t_zero_idx = np.argmin(np.abs(time_axis))
@@ -258,12 +344,10 @@ class NeuralFeatureAnalyzer:
         }
 
     def sort_trials_by_conditions(self):
-        # Sort trials by heading and modality, return conditions dict and heading/modality arrays
-        # Heading values depend on is_tuning (task type), NOT on is_RT
         try:
             conditions = {}
             headingInds = np.unique(self.behavior['headingInd'])
-            modalities = np.unique(self.behavior['modality'])  
+            modalities_raw = np.unique(self.behavior['modality'])  
             headings = []
 
             if self.is_tuning:
@@ -283,6 +367,8 @@ class NeuralFeatureAnalyzer:
                         headings.append(heading_values[headingInd])
                 headings = np.array(headings)
                 
+                # Tuning task: use original modality numbers (NO coherence split)
+                modalities = modalities_raw
                 for modality in modalities:
                     conditions[modality] = {}
                     for headingInd in headingInds:
@@ -302,19 +388,72 @@ class NeuralFeatureAnalyzer:
                         headings.append(heading_values[headingInd])
                 headings = np.array(headings)
                 
-                for modality in modalities:
-                    if modality == 1:
-                        coherence = 1
-                    else:
-                        coherence = 2
-                    conditions[modality] = {}
-                    for headingInd in headingInds:
-                        if headingInd in heading_values:
-                            heading = heading_values[headingInd]
-                            mask = (self.behavior['headingInd'] == headingInd) & (self.behavior['modality'] == modality) & (self.behavior['coherenceInd'] == coherence)
-                            trial_indices = np.where(mask)[0]
-                            conditions[modality][heading] = trial_indices
-                    
+                # Regular task: split visual and combined into high and low coherence
+                modalities = []
+                
+                for modality in modalities_raw:
+                    if modality == 1:  # Vestibular
+                        modalities.append('ves')
+                        conditions['ves'] = {}
+                        for headingInd in headingInds:
+                            if headingInd in heading_values:
+                                heading = heading_values[headingInd]
+                                mask = (self.behavior['headingInd'] == headingInd) & \
+                                    (self.behavior['modality'] == modality) & \
+                                    (self.behavior['coherenceInd'] == 1)
+                                trial_indices = np.where(mask)[0]
+                                conditions['ves'][heading] = trial_indices
+                                
+                    elif modality == 2:  # Visual
+                        if 'vis' not in modalities:
+                            modalities.append('vis')
+                            modalities.append('vis_low')
+                        
+                        conditions['vis'] = {}
+                        for headingInd in headingInds:
+                            if headingInd in heading_values:
+                                heading = heading_values[headingInd]
+                                mask = (self.behavior['headingInd'] == headingInd) & \
+                                    (self.behavior['modality'] == modality) & \
+                                    (self.behavior['coherenceInd'] == 2)
+                                trial_indices = np.where(mask)[0]
+                                conditions['vis'][heading] = trial_indices
+                        
+                        conditions['vis_low'] = {}
+                        for headingInd in headingInds:
+                            if headingInd in heading_values:
+                                heading = heading_values[headingInd]
+                                mask = (self.behavior['headingInd'] == headingInd) & \
+                                    (self.behavior['modality'] == modality) & \
+                                    (self.behavior['coherenceInd'] == 1)
+                                trial_indices = np.where(mask)[0]
+                                conditions['vis_low'][heading] = trial_indices
+                                
+                    elif modality == 3:  # Combined
+                        if 'comb' not in modalities:
+                            modalities.append('comb')
+                            modalities.append('comb_low')
+                        
+                        conditions['comb'] = {}
+                        for headingInd in headingInds:
+                            if headingInd in heading_values:
+                                heading = heading_values[headingInd]
+                                mask = (self.behavior['headingInd'] == headingInd) & \
+                                    (self.behavior['modality'] == modality) & \
+                                    (self.behavior['coherenceInd'] == 2)
+                                trial_indices = np.where(mask)[0]
+                                conditions['comb'][heading] = trial_indices
+                        
+                        conditions['comb_low'] = {}
+                        for headingInd in headingInds:
+                            if headingInd in heading_values:
+                                heading = heading_values[headingInd]
+                                mask = (self.behavior['headingInd'] == headingInd) & \
+                                    (self.behavior['modality'] == modality) & \
+                                    (self.behavior['coherenceInd'] == 1)
+                                trial_indices = np.where(mask)[0]
+                                conditions['comb_low'][heading] = trial_indices
+                        
             return conditions, headings, modalities
             
         except Exception as e:
@@ -328,14 +467,31 @@ class NeuralFeatureAnalyzer:
             return 0.0
 
     def calculate_anova_for_window(self, unit_idx, modality, start_idx, end_idx):
-        # Calculate ANOVA using only headings with 3.9 <= |heading| <= 45
-        # Heading values depend on is_tuning (task type), NOT on is_RT
+        """Calculate ANOVA using only headings with 3.9 <= |heading| <= 45"""
         try:
             spike_data = self.spikes_data[self.alignment][unit_idx]
             window_spikes = spike_data[:, start_idx:end_idx]
             firing_rates = np.mean(window_spikes, axis=1)
             
-            modality_mask = self.behavior['modality'] == modality
+            # Map modality to raw modality number and coherence for filtering
+            if self.is_tuning:
+                raw_modality = modality
+                modality_mask = self.behavior['modality'] == raw_modality
+            else:
+                # Regular task with coherence split
+                if modality == 'ves':
+                    modality_mask = (self.behavior['modality'] == 1) & (self.behavior['coherenceInd'] == 1)
+                elif modality == 'vis':
+                    modality_mask = (self.behavior['modality'] == 2) & (self.behavior['coherenceInd'] == 2)
+                elif modality == 'vis_low':
+                    modality_mask = (self.behavior['modality'] == 2) & (self.behavior['coherenceInd'] == 1)
+                elif modality == 'comb':
+                    modality_mask = (self.behavior['modality'] == 3) & (self.behavior['coherenceInd'] == 2)
+                elif modality == 'comb_low':
+                    modality_mask = (self.behavior['modality'] == 3) & (self.behavior['coherenceInd'] == 1)
+                else:
+                    return {'F': np.nan, 'p': np.nan, 'selective': 0}
+            
             modality_firing_rates = firing_rates[modality_mask]
             modality_heading_inds = self.behavior['headingInd'][modality_mask]
             
@@ -350,7 +506,6 @@ class NeuralFeatureAnalyzer:
                     5: 3.9, 6: 10, 7: 21.5, 8: 45
                 }
             else:
-                # Regular task headings
                 heading_values_map = {
                     1: -10, 2: -3.9, 3: -1.5, 4: 0, 5: 1.5, 6: 3.9, 7: 10
                 }
@@ -359,7 +514,6 @@ class NeuralFeatureAnalyzer:
             for heading_ind in np.unique(modality_heading_inds):
                 if heading_ind in heading_values_map:
                     heading = heading_values_map[heading_ind]
-                    # Filter: only use headings where 3.9 <= |heading| <= 45
                     if abs(heading) >= 3.9 and abs(heading) <= 45:
                         heading_rates = modality_firing_rates[modality_heading_inds == heading_ind]
                         if len(heading_rates) > 0:
@@ -375,7 +529,7 @@ class NeuralFeatureAnalyzer:
             return {'F': np.nan, 'p': np.nan, 'selective': 0}
 
     def calculate_correlation_for_window(self, unit_idx, modality, start_idx, end_idx):
-        # Calculate correlation using only headings with 3.9 <= |heading| <= 45
+        """Calculate correlation using only headings with 3.9 <= |heading| <= 45"""
         try:
             spike_data = self.spikes_data[self.alignment][unit_idx]
             window_spikes = spike_data[:, start_idx:end_idx]
@@ -383,13 +537,16 @@ class NeuralFeatureAnalyzer:
             
             conditions, headings, _ = self.sort_trials_by_conditions()
             
+            if modality not in conditions:
+                return {'r': np.nan, 'p': np.nan}
+            
             condition_rates = {}
             for heading in headings:
-                # Filter: only use headings where 3.9 <= |heading| <= 45
                 if abs(heading) >= 3.9 and abs(heading) <= 45:
-                    trial_indices = conditions[modality][heading]
-                    if len(trial_indices) > 0:
-                        condition_rates[heading] = np.mean(firing_rates[trial_indices])
+                    if heading in conditions[modality]:
+                        trial_indices = conditions[modality][heading]
+                        if len(trial_indices) > 0:
+                            condition_rates[heading] = np.mean(firing_rates[trial_indices])
             
             rates = []
             heading_vals = []
@@ -408,7 +565,6 @@ class NeuralFeatureAnalyzer:
             return {'r': np.nan, 'p': np.nan}
 
     def get_unit_area(self, unit_idx):
-        # Determine anatomical area: 'MST', 'VPS', 'MT', or 'unknown'
         if unit_idx in self.units_data.get('MST', []):
             return 'MST'
         elif unit_idx in self.units_data.get('VPS', []):
@@ -419,7 +575,6 @@ class NeuralFeatureAnalyzer:
             return 'unknown'
         
     def calculate_relative_positions(self):
-        # Calculate relative positions and depths in mm
         try:
             depths = None
             if hasattr(self.unit_info, 'columns') and 'depth' in self.unit_info.columns:
@@ -476,7 +631,10 @@ class NeuralFeatureAnalyzer:
             }
 
     def calculate_roc_area(self, responses1, responses2):
-        # Calculate ROC area between two response distributions
+        """
+        Calculate RAW ROC area between two response distributions.
+        
+        """
         try:
             if len(responses1) == 0 or len(responses2) == 0:
                 return 0.5
@@ -485,27 +643,31 @@ class NeuralFeatureAnalyzer:
             
             all_responses = np.concatenate([responses1, responses2])
             labels = np.concatenate([np.zeros(len(responses1)), np.ones(len(responses2))])
-            auc = roc_auc_score(labels, all_responses)
-            ideal_auc = max(auc, 1 - auc)
             
-            return ideal_auc
+            auc = roc_auc_score(labels, all_responses)
+            
+            return auc  # Return raw AUC
             
         except Exception as e:
+            print(f"Warning: ROC calculation failed: {e}")
             return 0.5
 
     def cumulative_gaussian(self, x, mu, sigma):
+        """
+        Standard cumulative Gaussian (CDF of normal distribution).
+        Used for neurometric curve fitting.
+        """
         if sigma <= 0:
             sigma = 1e-6
         return stats.norm.cdf(x, loc=mu, scale=sigma)
 
     def calculate_neurometric_threshold_window(self, unit_idx, modality, start_idx, end_idx):
-        # Calculate neurometric threshold using headings where 0 < |heading| <= 40
-        # Heading values depend on is_tuning (task type), NOT on is_RT
+        """
+        Calculate neurometric threshold using headings 3 < |h| ≤ 15.
+        With detailed reporting of firing rates and ROC values.
+        """
         try:
-            spike_data = self.spikes_data[self.alignment][unit_idx]
-            window_spikes = spike_data[:, start_idx:end_idx]
-            trial_firing_rates = np.mean(window_spikes, axis=1)
-            
+            # Get heading values map based on task type
             if self.is_tuning and self.date == '20250306':
                 heading_values_map = {
                     1: -90, 2: -45, 3: -21.5, 4: -10, 5: -3.9, 6: -1.5, 7: 0,
@@ -517,14 +679,51 @@ class NeuralFeatureAnalyzer:
                     5: 3.9, 6: 10, 7: 21.5, 8: 45
                 }
             else:
-                # Regular task headings
                 heading_values_map = {
                     1: -10, 2: -3.9, 3: -1.5, 4: 0, 5: 1.5, 6: 3.9, 7: 10
                 }
             
-            modality_mask = self.behavior['modality'] == modality
+            # Create modality mask
+            if self.is_tuning:
+                raw_modality = modality
+                modality_mask = self.behavior['modality'] == raw_modality
+            else:
+                if modality == 'ves':
+                    modality_mask = (self.behavior['modality'] == 1) & (self.behavior['coherenceInd'] == 1)
+                elif modality == 'vis':
+                    modality_mask = (self.behavior['modality'] == 2) & (self.behavior['coherenceInd'] == 2)
+                elif modality == 'vis_low':
+                    modality_mask = (self.behavior['modality'] == 2) & (self.behavior['coherenceInd'] == 1)
+                elif modality == 'comb':
+                    modality_mask = (self.behavior['modality'] == 3) & (self.behavior['coherenceInd'] == 2)
+                elif modality == 'comb_low':
+                    modality_mask = (self.behavior['modality'] == 3) & (self.behavior['coherenceInd'] == 1)
+                else:
+                    return self._return_nan_result(0, "unknown_modality")
+            
+            # Filter spike data and calculate rates
+            spike_data = self.spikes_data[self.alignment][unit_idx]
+            
+            if spike_data.shape[0] != len(modality_mask):
+                print(f"ERROR: Dimension mismatch for unit {unit_idx}, modality {modality}!")
+                return self._return_nan_result(0, "dimension_mismatch")
+            
+            n_trials, n_time_bins = spike_data.shape
+            if start_idx < 0 or end_idx > n_time_bins or start_idx >= end_idx:
+                print(f"ERROR: Invalid window indices for unit {unit_idx}")
+                return self._return_nan_result(0, "invalid_window_indices")
+            
+            filtered_spike_data = spike_data[modality_mask, :]
+            window_spikes = filtered_spike_data[:, start_idx:end_idx]
+            
+            if window_spikes.shape[1] == 0:
+                print(f"ERROR: Empty window for unit {unit_idx}: [{start_idx}:{end_idx}]")
+                return self._return_nan_result(0, "empty_window")
+            
+            trial_firing_rates = np.mean(window_spikes, axis=1)
+            
+            # Get headings for filtered trials
             modality_heading_inds = self.behavior['headingInd'][modality_mask]
-            modality_rates = trial_firing_rates[modality_mask]
             
             modality_headings = []
             valid_mask = []
@@ -536,89 +735,257 @@ class NeuralFeatureAnalyzer:
                     valid_mask.append(False)
             
             modality_headings = np.array(modality_headings)
-            modality_rates = modality_rates[valid_mask]
+            modality_rates = trial_firing_rates[valid_mask]
+            
+            # Filter out NaN trials
+            nan_mask = ~np.isnan(modality_rates)
+            modality_headings = modality_headings[nan_mask]
+            modality_rates = modality_rates[nan_mask]
+            
+            if len(modality_rates) == 0:
+                return self._return_nan_result(0, "no_valid_trials_after_nan_filter")
+            
             unique_headings = np.unique(modality_headings)
             
+            # ============================================
+            # REPORTING: Mean firing rates per heading
+            # ============================================
+            if unit_idx < 3:  # Report for first 3 units
+                print(f"\n  === Unit {unit_idx}, Modality {modality} ===")
+                print(f"  Mean firing rates by heading:")
+                for h in sorted(unique_headings):
+                    h_rates = modality_rates[modality_headings == h]
+                    print(f"    {h:+7.2f}°: {np.mean(h_rates):6.2f} Hz (n={len(h_rates)} trials)")
+            
+            # ============================================
+            # Step 1: Determine preference using overlap headings (3.9, 10)
+            # ============================================
+            OVERLAP_HEADINGS = [10.0]
+            tolerance = 0.1
+            
+            overlap_pos_rates = []
+            overlap_neg_rates = []
+            
+            for target_h in OVERLAP_HEADINGS:
+                # Positive heading
+                pos_mask = np.abs(modality_headings - target_h) < tolerance
+                if np.sum(pos_mask) > 0:
+                    overlap_pos_rates.extend(modality_rates[pos_mask])
+                
+                # Negative heading
+                neg_mask = np.abs(modality_headings - (-target_h)) < tolerance
+                if np.sum(neg_mask) > 0:
+                    overlap_neg_rates.extend(modality_rates[neg_mask])
+            
+            if len(overlap_pos_rates) > 0 and len(overlap_neg_rates) > 0:
+                mean_rate_positive = np.mean(overlap_pos_rates)
+                mean_rate_negative = np.mean(overlap_neg_rates)
+                
+                prefers_right = mean_rate_positive > mean_rate_negative
+                preference_strength = abs(mean_rate_positive - mean_rate_negative)
+                
+                if unit_idx < 3:
+                    print(f"  Preference (from overlap headings):")
+                    print(f"    Positive ({OVERLAP_HEADINGS}): {mean_rate_positive:.2f} Hz (n={len(overlap_pos_rates)})")
+                    print(f"    Negative ({[-h for h in OVERLAP_HEADINGS]}): {mean_rate_negative:.2f} Hz (n={len(overlap_neg_rates)})")
+                    print(f"    → Prefers {'RIGHT' if prefers_right else 'LEFT'} (Δ={preference_strength:.2f} Hz)")
+            else:
+                # Fallback: use all available headings
+                pos_mask = modality_headings > 0
+                neg_mask = modality_headings < 0
+                
+                if np.sum(pos_mask) > 0 and np.sum(neg_mask) > 0:
+                    mean_rate_positive = np.mean(modality_rates[pos_mask])
+                    mean_rate_negative = np.mean(modality_rates[neg_mask])
+                    prefers_right = mean_rate_positive > mean_rate_negative
+                    preference_strength = abs(mean_rate_positive - mean_rate_negative)
+                    
+                    if unit_idx < 3:
+                        print(f"  Warning: Using all headings for preference (overlap insufficient)")
+                        print(f"    Positive headings: {mean_rate_positive:.2f} Hz")
+                        print(f"    Negative headings: {mean_rate_negative:.2f} Hz")
+                        print(f"    → Prefers {'RIGHT' if prefers_right else 'LEFT'}")
+                else:
+                    prefers_right = True
+                    preference_strength = 0
+                    if unit_idx < 3:
+                        print(f"  Warning: Cannot determine preference (insufficient data)")
+            
+            # ============================================
+            # Step 2: Calculate ROC for headings 3 < |h| ≤ 15
+            # ============================================
+            roc_data = []  # Store detailed ROC info for reporting
             roc_values = []
             heading_values = []
+            roc_weights = []
+            heading_n_trials = []
+            
             sorted_headings = np.sort(unique_headings)
             
+            if unit_idx < 3:
+                print(f"  ROC calculation (headings in range (3, 15]):")
+            
             for heading in sorted_headings:
-                # Filter: only use headings where 0 < |heading| <= 40
-                if heading <= 0 or heading > 40:
-                    continue  
-
+                # Only use headings in range (3, 15]
+                if heading <= 3 or heading > 15:
+                    continue
+                
                 opposite_heading = -heading
                 
-                if opposite_heading in unique_headings:
-                    heading_responses = modality_rates[modality_headings == heading]
-                    opposite_responses = modality_rates[modality_headings == opposite_heading]
+                # Check if opposite exists (with tolerance)
+                heading_mask = np.abs(modality_headings - heading) < tolerance
+                opposite_mask = np.abs(modality_headings - opposite_heading) < tolerance
+                
+                if np.sum(heading_mask) > 0 and np.sum(opposite_mask) > 0:
+                    heading_responses = modality_rates[heading_mask]
+                    opposite_responses = modality_rates[opposite_mask]
                     
-                    if len(heading_responses) > 0 and len(opposite_responses) > 0:
-                        roc_area = self.calculate_roc_area(heading_responses, opposite_responses)
-                        
-                        roc_values.append(roc_area)
-                        heading_values.append(heading)
-                        roc_values.append(1 - roc_area)
-                        heading_values.append(-heading)
-        
+                    # Calculate raw ROC
+                    # responses1 = negative heading, responses2 = positive heading
+                    # ROC > 0.5 means higher firing for positive heading
+                    roc_area = self.calculate_roc_area(opposite_responses, heading_responses)
+                    
+                    if np.isnan(roc_area):
+                        continue
+                    
+                    # Calculate mean rates for this pair
+                    mean_neg = np.mean(opposite_responses)
+                    mean_pos = np.mean(heading_responses)
+                    
+                    n_total = len(heading_responses) + len(opposite_responses)
+                    weight = np.sqrt(n_total)
+                    
+                    # Store for reporting
+                    roc_data.append({
+                        'heading': heading,
+                        'roc': roc_area,
+                        'mean_neg': mean_neg,
+                        'mean_pos': mean_pos,
+                        'n_trials': n_total
+                    })
+                    
+                    if unit_idx < 3:
+                        print(f"    ±{heading:5.1f}°: ROC={roc_area:.3f}, "
+                            f"rate_neg={mean_neg:.2f}, rate_pos={mean_pos:.2f}, n={n_total}")
+                    
+                    # Add both points symmetrically
+                    roc_values.extend([roc_area, 1 - roc_area])
+                    heading_values.extend([heading, opposite_heading])
+                    roc_weights.extend([weight, weight])
+                    heading_n_trials.extend([n_total, n_total])
+            
+            if len(roc_data) == 0:
+                return self._return_nan_result(len(unique_headings), "no_valid_heading_pairs")
+            
             heading_values = np.array(heading_values)
             roc_values = np.array(roc_values)
+            roc_weights = np.array(roc_weights)
+            heading_n_trials = np.array(heading_n_trials)
 
+            # Sort by heading
             sort_idx = np.argsort(heading_values)
             heading_values = heading_values[sort_idx]   
             roc_values = roc_values[sort_idx]
+            roc_weights = roc_weights[sort_idx]
+            heading_n_trials = heading_n_trials[sort_idx]
             
-            if len(roc_values) < 3:
-                return self._return_nan_result(len(unique_headings), "insufficient_data_points")
+            # Check data quality
+            if len(roc_values) < 4:
+                return self._return_nan_result(len(unique_headings), 
+                    f"insufficient_data_points_{len(roc_values)}")
             
+            if np.min(heading_n_trials) < 3:
+                if unit_idx < 3:
+                    print(f"  Warning: Low trial count (min={np.min(heading_n_trials)})")
+            
+            # Check discrimination BEFORE flipping
             if np.std(roc_values) < 0.01:
+                print(f"it goes to check point check here")
                 return self._return_nan_result(len(unique_headings), "no_discrimination")
-
-            try:           
-                initial_guesses = [
-                    [0.0, 8],
-                    [0.0, 15],
-                    [0.0, 50]
-                ]
-
-                mu_lower = -1e-6     
-                mu_upper = 1e-6      
-                sigma_lower = 0.1
-                sigma_upper = 300
-                threshold_upper = 300
                 
-                bounds = ([mu_lower, sigma_lower], [mu_upper, sigma_upper])
+
+            # Debug: check ROC values before flipping
+            if unit_idx < 3:
+                pos_rocs = roc_values[heading_values > 0]
+                neg_rocs = roc_values[heading_values < 0]
+                print(f"  Before flipping:")
+                print(f"    Positive headings: ROC mean={np.mean(pos_rocs):.3f}, std={np.std(pos_rocs):.3f}")
+                print(f"    Negative headings: ROC mean={np.mean(neg_rocs):.3f}, std={np.std(neg_rocs):.3f}")
+
+            # ============================================
+            # Step 3: Flip ROC values if neuron prefers left
+            # ============================================
+            if not prefers_right:
+                roc_values = 1 - roc_values
+                flipped = True
+                if unit_idx < 3:
+                    print(f"  → FLIPPED ROC values (neuron prefers left)")
+                    pos_rocs_after = roc_values[heading_values > 0]
+                    neg_rocs_after = roc_values[heading_values < 0]
+                    print(f"  After flipping:")
+                    print(f"    Positive headings: ROC mean={np.mean(pos_rocs_after):.3f}")
+                    print(f"    Negative headings: ROC mean={np.mean(neg_rocs_after):.3f}")
+            else:
+                flipped = False
+                if unit_idx < 3:
+                    print(f"  → No flipping needed (neuron prefers right)")
+
+            # ============================================
+            # Step 4: Fit cumulative Gaussian
+            # ============================================
+            if unit_idx < 3:
+                print(f"  Fitting cumulative Gaussian...")
+                print(f"    Data points: {len(heading_values)}")
+                print(f"    Heading range: [{np.min(heading_values):.1f}, {np.max(heading_values):.1f}]")
+                print(f"    ROC range: [{np.min(roc_values):.3f}, {np.max(roc_values):.3f}]")
+            
+            try:
+                initial_guesses = [
+                    (0, 2.5),
+                    (0, 5.0),
+                    (0, 10.0),
+                    (0, 50.0)
+                ]
+                
+                # Constrain mu very close to 0
+                bounds = ([-1e-6, 0.1], [1e-6, 300])
                 
                 best_fit = None
                 best_r_squared = -np.inf
                 
-                for i, p0 in enumerate(initial_guesses):
+                for i, (mu_init, sigma_init) in enumerate(initial_guesses):
                     try:
-                        p0_clipped = [
-                            np.clip(p0[0], mu_lower, mu_upper),
-                            np.clip(p0[1], sigma_lower, sigma_upper)
-                        ]
-                        
                         popt, pcov = curve_fit(
-                            self.cumulative_gaussian, 
+                            self.cumulative_gaussian,
                             heading_values, 
                             roc_values, 
-                            p0=p0_clipped, 
-                            bounds=bounds, 
+                            p0=[mu_init, sigma_init],
+                            sigma=1/roc_weights,
+                            absolute_sigma=False,
+                            bounds=bounds,
                             maxfev=5000
                         )
                         
                         mu_fit, sigma_fit = popt
+                        
+                        # Threshold at 84th percentile
+                        threshold_84 = abs(mu_fit) + abs(sigma_fit) * stats.norm.ppf(0.84)
+                        
+                        # Calculate weighted R²
                         y_pred = self.cumulative_gaussian(heading_values, mu_fit, sigma_fit)
-                        ss_res = np.sum((roc_values - y_pred) ** 2)
-                        ss_tot = np.sum((roc_values - np.mean(roc_values)) ** 2)
+                        ss_res = np.sum(roc_weights * (roc_values - y_pred) ** 2)
+                        ss_tot = np.sum(roc_weights * (roc_values - np.average(roc_values, weights=roc_weights)) ** 2)
                         r_squared = 1 - (ss_res / ss_tot) if ss_tot > 0 else -np.inf
-                        threshold_84 = mu_fit + sigma_fit * stats.norm.ppf(0.84)
 
-                        if (threshold_84 > sigma_lower and threshold_84 < threshold_upper and
-                            sigma_fit > sigma_lower and sigma_fit < sigma_upper and
-                            r_squared > -3 and
+                        if unit_idx < 3:
+                            print(f"    Attempt {i}: μ={mu_fit:.6f}, σ={sigma_fit:.2f}, "
+                                f"threshold={threshold_84:.2f}°, R²={r_squared:.3f}")
+
+                        # Quality checks
+                        if (threshold_84 > 0.1 and threshold_84 < 300 and
+                            sigma_fit > 0.1 and sigma_fit < 300 and
+                            abs(mu_fit) < 1e-5 and
+                            r_squared > -1 and
                             not np.isnan(threshold_84) and 
                             not np.isinf(threshold_84)):
                             
@@ -629,30 +996,51 @@ class NeuralFeatureAnalyzer:
                                     'fit_mu': mu_fit,
                                     'fit_sigma': sigma_fit,
                                     'n_headings': len(unique_headings),
-                                    'attempt': i
+                                    'n_fit_headings': len(np.unique(np.abs(heading_values))),
+                                    'attempt': i,
+                                    'preferred_direction': 'right' if prefers_right else 'left',
+                                    'was_flipped': flipped,
+                                    'preference_strength': preference_strength,
+                                    'n_trials_used': len(modality_rates),
+                                    'min_trials_per_heading': int(np.min(heading_n_trials)),
+                                    'failure_reason': 'success',
+                                    'roc_data': roc_data  # Include detailed ROC data
                                 }
                                 best_r_squared = r_squared
                                 
                     except Exception as fit_error:
+                        if unit_idx < 3:
+                            print(f"    Attempt {i} failed: {fit_error}")
                         continue
                 
                 if best_fit is not None:
+                    if unit_idx < 3:
+                        print(f"  ✓ FIT SUCCESSFUL!")
+                        print(f"    Threshold: {best_fit['threshold']:.2f}°")
+                        print(f"    R²: {best_fit['r_squared']:.3f}")
+                        print(f"    σ: {best_fit['fit_sigma']:.2f}")
                     return best_fit
                 else:
-                    return self._return_nan_result(len(unique_headings), "curve_fitting_failed")
+                    if unit_idx < 3:
+                        print(f"  ✗ All fitting attempts failed")
+                    return self._return_nan_result(len(unique_headings), "curve_fitting_failed_all_attempts")
                     
             except Exception as e:
-                return self._return_nan_result(len(unique_headings), f"fitting_error_{str(e)[:20]}")
+                if unit_idx < 3:
+                    print(f"  ✗ Fitting error: {e}")
+                return self._return_nan_result(len(unique_headings), f"fitting_error_{str(e)[:30]}")
                 
         except Exception as e:
-            return self._return_nan_result(0, f"general_error_{str(e)[:20]}")
+            print(f"ERROR in calculate_neurometric_threshold_window: {e}")
+            import traceback
+            traceback.print_exc()
+            return self._return_nan_result(0, f"general_error_{str(e)[:30]}")
 
     def calculate_baseline_results(self, unit_idx, modalities):
-        # Calculate baseline (pre-stimulus) results for all measures (tuning task only)
+        """Calculate baseline (pre-stimulus) results for all measures (tuning task Mode 1 only)"""
         baseline_results = {}
         
         try:
-            # Only calculate baseline for Mode 1 (tuning without RT)
             if not self.is_tuning or self.is_RT:
                 return baseline_results
             
@@ -694,19 +1082,30 @@ class NeuralFeatureAnalyzer:
         return baseline_results
 
     def analyze_all_units(self):
-        # Analyze all units and extract features with temporal dynamics
-        # Mode 1: is_tuning=True, is_RT=False -> Tuning with sliding windows
-        # Mode 2: is_tuning=True, is_RT=True -> Tuning with RT window
-        # Mode 3: is_tuning=False, is_RT=False -> Regular pre-choice
-        # Mode 4: is_tuning=False, is_RT=True -> Regular with RT window
+        print(f"\nAnalyzing units for {self.subject} {self.date} with alignment {self.alignment}")
         
-        print(f"Analyzing units for {self.subject} {self.date} with alignment {self.alignment}")
-        print(f"Mode: is_tuning={self.is_tuning}, is_RT={self.is_RT}")
+        # Determine mode
+        if self.is_tuning and not self.is_RT:
+            mode_num = 1
+            mode_desc = "Tuning with sliding windows"
+        elif self.is_tuning and self.is_RT:
+            mode_num = 2
+            mode_desc = "Tuning with mean RT-based windows"
+        elif not self.is_tuning and self.is_RT:
+            mode_num = 3
+            mode_desc = "Regular task with mean RT-based windows (stimOn aligned)"
+        else:
+            mode_num = 4
+            mode_desc = "Regular task with saccade-aligned windows"
+        
+        print(f"MODE {mode_num}: {mode_desc}")
+        print(f"Analysis window: {self.analysis_window}ms")
         
         try:
             positions = self.calculate_relative_positions()
             conditions, headings, modalities = self.sort_trials_by_conditions()
             
+            print(f"Modalities to analyze: {modalities}")
             print(f"Processing {self.n_units} units...")
             
             for unit_idx in range(self.n_units):
@@ -714,10 +1113,8 @@ class NeuralFeatureAnalyzer:
                     if unit_idx % 10 == 0 or unit_idx < 5:
                         print(f"  Processing unit {unit_idx + 1}/{self.n_units}")
 
-                    # Get the REAL cluster ID from unit_info
-                    real_cluster_id = self.unit_info['cluster_id'][unit_idx]
-
-                    unit_id = f"{self.date}{real_cluster_id:04d}"
+                    # Convert numpy type to Python int
+                    real_cluster_id = int(self.unit_info['cluster_id'][unit_idx])
           
                     unit_area = self.get_unit_area(unit_idx)
                     
@@ -728,6 +1125,7 @@ class NeuralFeatureAnalyzer:
                         'alignment': self.alignment,
                         'is_tuning': self.is_tuning,
                         'is_RT': self.is_RT,
+                        'mode': mode_num,
                         'unit_idx': unit_idx,
                         'area': unit_area,
                         'absolute_x': positions['absolute_x'][unit_idx],
@@ -738,8 +1136,10 @@ class NeuralFeatureAnalyzer:
                         'relative_depth': positions['relative_depth'][unit_idx],
                     }
                     
-                    # Mode 1: Tuning with sliding windows
-                    if self.is_tuning and not self.is_RT:
+                    # ============================================================
+                    # MODE 1: Tuning with sliding windows
+                    # ============================================================
+                    if mode_num == 1:
                         neurometric_windows = self.get_neurometric_windows()
                         tuning_windows = self.get_tuning_windows()
                         
@@ -749,6 +1149,7 @@ class NeuralFeatureAnalyzer:
                         for modality in modalities:
                             modality_name = {1.0: 'ves', 2.0: 'vis', 3.0: 'comb'}.get(modality, str(modality))
                             
+                            # Neurometric analysis
                             neurometric_centers = [baseline_center]
                             neurometric_thresholds = [baseline_results.get(f'{modality_name}_baseline_neurometric_threshold', np.nan)]
                             neurometric_r2s = [baseline_results.get(f'{modality_name}_baseline_neurometric_r2', np.nan)]
@@ -783,6 +1184,7 @@ class NeuralFeatureAnalyzer:
                             features[f'neurometric_{modality_name}_sigma'] = neurometric_sigmas
                             features[f'neurometric_{modality_name}_best_center_ms'] = best_neuro_center
                             
+                            # ANOVA analysis
                             anova_centers = [baseline_center]
                             anova_Fs = [baseline_results.get(f'{modality_name}_baseline_anova_F', np.nan)]
                             anova_ps = [baseline_results.get(f'{modality_name}_baseline_anova_p', np.nan)]
@@ -810,6 +1212,7 @@ class NeuralFeatureAnalyzer:
                             features[f'anova_{modality_name}_p'] = anova_ps
                             features[f'anova_{modality_name}_best_center_ms'] = best_anova_center
                             
+                            # Correlation analysis
                             corr_centers = [baseline_center]
                             corr_rs = [baseline_results.get(f'{modality_name}_baseline_correlation_r', np.nan)]
                             corr_ps = [baseline_results.get(f'{modality_name}_baseline_correlation_p', np.nan)]
@@ -837,6 +1240,7 @@ class NeuralFeatureAnalyzer:
                             features[f'correlation_{modality_name}_p'] = corr_ps
                             features[f'correlation_{modality_name}_best_center_ms'] = best_corr_center
                         
+                        # Calculate overall firing rate from best windows
                         overall_rates = []
                         for modality in modalities:
                             modality_name = {1.0: 'ves', 2.0: 'vis', 3.0: 'comb'}.get(modality, str(modality))
@@ -844,7 +1248,6 @@ class NeuralFeatureAnalyzer:
                             if best_center is not None:
                                 centers = features[f'neurometric_{modality_name}_centers']
                                 if best_center in centers:
-                                    idx = centers.index(best_center)
                                     for window in neurometric_windows:
                                         if int(window['center_time_ms']) == best_center:
                                             spike_data = self.spikes_data[self.alignment][unit_idx]
@@ -854,80 +1257,102 @@ class NeuralFeatureAnalyzer:
                         
                         features['overall_firing_rate'] = np.mean(overall_rates) if len(overall_rates) > 0 else 0.0
                     
-                    # Mode 2: Tuning with RT window
-                    elif self.is_tuning and self.is_RT:
-                        time_axis = self.time_axes[self.alignment]
+                    # ============================================================
+                    # MODE 2: Tuning with mean RT-based windows
+                    # ============================================================
+                    elif mode_num == 2:
+                        if unit_idx < 5:
+                            print(f"    Mode 2: Using RT-based windows (stimOn aligned)")
                         
                         for modality in modalities:
                             modality_name = {1.0: 'ves', 2.0: 'vis', 3.0: 'comb'}.get(modality, str(modality))
                             
-                            start_idx, end_idx = self.get_time_window_indices_RT(modality)
-                            center_ms = int((time_axis[start_idx] + time_axis[end_idx]) / 2 * 1000)
+                            # Get RT-specific window for this modality
+                            start_idx, end_idx, center_ms, mean_rt_ms = self.get_time_window_indices_RT(modality)
                             
+                            if unit_idx < 5:
+                                w0, w1 = self.analysis_window
+                                print(f"{modality}: meanRT={mean_rt_ms:.1f}ms, window=[{mean_rt_ms+w0:.1f}, {mean_rt_ms+w1:.1f}]ms (center {center_ms:.1f})")
+                            
+                            # Neurometric threshold
                             neurometric = self.calculate_neurometric_threshold_window(
                                 unit_idx, modality, start_idx, end_idx
                             )
                             
-                            features[f'neurometric_{modality_name}_centers'] = [center_ms]
+                            features[f'neurometric_{modality_name}_centers'] = [int(center_ms)]
                             features[f'neurometric_{modality_name}_thresholds'] = [neurometric['threshold']]
                             features[f'neurometric_{modality_name}_r2'] = [neurometric['r_squared']]
                             features[f'neurometric_{modality_name}_mu'] = [neurometric['fit_mu']]
                             features[f'neurometric_{modality_name}_sigma'] = [neurometric['fit_sigma']]
-                            features[f'neurometric_{modality_name}_best_center_ms'] = center_ms
+                            features[f'neurometric_{modality_name}_best_center_ms'] = int(center_ms)
+                            features[f'neurometric_{modality_name}_mean_rt_ms'] = mean_rt_ms
                             
+                            # ANOVA
                             anova = self.calculate_anova_for_window(unit_idx, modality, start_idx, end_idx)
-                            features[f'anova_{modality_name}_centers'] = [center_ms]
+                            features[f'anova_{modality_name}_centers'] = [int(center_ms)]
                             features[f'anova_{modality_name}_F'] = [anova['F']]
                             features[f'anova_{modality_name}_p'] = [anova['p']]
-                            features[f'anova_{modality_name}_best_center_ms'] = center_ms
+                            features[f'anova_{modality_name}_best_center_ms'] = int(center_ms)
                             
+                            # Correlation
                             correlation = self.calculate_correlation_for_window(unit_idx, modality, start_idx, end_idx)
-                            features[f'correlation_{modality_name}_centers'] = [center_ms]
+                            features[f'correlation_{modality_name}_centers'] = [int(center_ms)]
                             features[f'correlation_{modality_name}_r'] = [correlation['r']]
                             features[f'correlation_{modality_name}_p'] = [correlation['p']]
-                            features[f'correlation_{modality_name}_best_center_ms'] = center_ms
+                            features[f'correlation_{modality_name}_best_center_ms'] = int(center_ms)
                         
                         features['overall_firing_rate'] = 0.0
                     
-                    # Mode 4: Regular with RT window (NEW!)
-                    elif not self.is_tuning and self.is_RT:
-                        time_axis = self.time_axes[self.alignment]
+                    # ============================================================
+                    # MODE 3: Regular with mean RT-based windows (stimOn aligned)
+                    # ============================================================
+                    elif mode_num == 3:
+                        if unit_idx < 5:
+                            print(f"    Mode 3: Using RT-based windows (stimOn aligned)")
+                        
+                        spike_data = self.spikes_data[self.alignment][unit_idx]
                         
                         for modality in modalities:
-                            modality_name = {1.0: 'ves', 2.0: 'vis', 3.0: 'comb'}.get(modality, str(modality))
+                            # Get RT-specific window for this modality
+                            start_idx, end_idx, center_ms, mean_rt_ms = self.get_time_window_indices_RT(modality)
                             
-                            start_idx, end_idx = self.get_time_window_indices_RT(modality)
-                            center_ms = int((time_axis[start_idx] + time_axis[end_idx]) / 2 * 1000)
+                            if unit_idx < 5:
+                                print(f"      {modality}: mean_RT={mean_rt_ms:.1f}ms, window center={center_ms:.1f}ms")
                             
+                            # Neurometric threshold
                             neurometric = self.calculate_neurometric_threshold_window(
                                 unit_idx, modality, start_idx, end_idx
                             )
+                            features[f'neurometric_{modality}_thresholds'] = [neurometric['threshold']]
+                            features[f'neurometric_{modality}_r2'] = [neurometric['r_squared']]
+                            features[f'neurometric_{modality}_mu'] = [neurometric['fit_mu']]
+                            features[f'neurometric_{modality}_sigma'] = [neurometric['fit_sigma']]
+                            features[f'neurometric_{modality}_best_center_ms'] = int(center_ms)
+                            features[f'neurometric_{modality}_center_ms'] = int(center_ms)
+                            features[f'neurometric_{modality}_mean_rt_ms'] = mean_rt_ms
                             
-                            features[f'neurometric_{modality_name}_centers'] = [center_ms]
-                            features[f'neurometric_{modality_name}_thresholds'] = [neurometric['threshold']]
-                            features[f'neurometric_{modality_name}_r2'] = [neurometric['r_squared']]
-                            features[f'neurometric_{modality_name}_mu'] = [neurometric['fit_mu']]
-                            features[f'neurometric_{modality_name}_sigma'] = [neurometric['fit_sigma']]
-                            features[f'neurometric_{modality_name}_best_center_ms'] = center_ms
-                            
+                            # ANOVA
                             anova = self.calculate_anova_for_window(unit_idx, modality, start_idx, end_idx)
-                            features[f'anova_{modality_name}_centers'] = [center_ms]
-                            features[f'anova_{modality_name}_F'] = [anova['F']]
-                            features[f'anova_{modality_name}_p'] = [anova['p']]
-                            features[f'anova_{modality_name}_best_center_ms'] = center_ms
+                            features[f'anova_{modality}_F'] = [anova['F']]
+                            features[f'anova_{modality}_p'] = [anova['p']]
+                            features[f'anova_{modality}_best_center_ms'] = int(center_ms)
+                            features[f'anova_{modality}_center_ms'] = int(center_ms)
                             
+                            # Correlation
                             correlation = self.calculate_correlation_for_window(unit_idx, modality, start_idx, end_idx)
-                            features[f'correlation_{modality_name}_centers'] = [center_ms]
-                            features[f'correlation_{modality_name}_r'] = [correlation['r']]
-                            features[f'correlation_{modality_name}_p'] = [correlation['p']]
-                            features[f'correlation_{modality_name}_best_center_ms'] = center_ms
+                            features[f'correlation_{modality}_r'] = [correlation['r']]
+                            features[f'correlation_{modality}_p'] = [correlation['p']]
+                            features[f'correlation_{modality}_best_center_ms'] = int(center_ms)
+                            features[f'correlation_{modality}_center_ms'] = int(center_ms)
                         
                         features['overall_firing_rate'] = 0.0
                     
-                    # Mode 3: Regular pre-choice
-                    else:
+                    # ============================================================
+                    # MODE 4: Regular with saccade-aligned fixed windows
+                    # ============================================================
+                    else:  # mode_num == 4
                         time_axis = self.time_axes[self.alignment]
-                        start_idx, end_idx = self.get_time_window_indices_regular()
+                        start_idx, end_idx = self.get_time_window_indices_fixed_saccade()
                         center_ms = int((time_axis[start_idx] + time_axis[end_idx]) / 2 * 1000)
                         
                         spike_data = self.spikes_data[self.alignment][unit_idx]
@@ -941,26 +1366,24 @@ class NeuralFeatureAnalyzer:
                         features['correlation_centers'] = [center_ms]
                         
                         for modality in modalities:
-                            modality_name = {1.0: 'ves', 2.0: 'vis', 3.0: 'comb'}.get(modality, str(modality))
-                            
                             neurometric = self.calculate_neurometric_threshold_window(
                                 unit_idx, modality, start_idx, end_idx
                             )
-                            features[f'neurometric_{modality_name}_thresholds'] = [neurometric['threshold']]
-                            features[f'neurometric_{modality_name}_r2'] = [neurometric['r_squared']]
-                            features[f'neurometric_{modality_name}_mu'] = [neurometric['fit_mu']]
-                            features[f'neurometric_{modality_name}_sigma'] = [neurometric['fit_sigma']]
-                            features[f'neurometric_{modality_name}_best_center_ms'] = center_ms
+                            features[f'neurometric_{modality}_thresholds'] = [neurometric['threshold']]
+                            features[f'neurometric_{modality}_r2'] = [neurometric['r_squared']]
+                            features[f'neurometric_{modality}_mu'] = [neurometric['fit_mu']]
+                            features[f'neurometric_{modality}_sigma'] = [neurometric['fit_sigma']]
+                            features[f'neurometric_{modality}_best_center_ms'] = center_ms
                             
                             anova = self.calculate_anova_for_window(unit_idx, modality, start_idx, end_idx)
-                            features[f'anova_{modality_name}_F'] = [anova['F']]
-                            features[f'anova_{modality_name}_p'] = [anova['p']]
-                            features[f'anova_{modality_name}_best_center_ms'] = center_ms
+                            features[f'anova_{modality}_F'] = [anova['F']]
+                            features[f'anova_{modality}_p'] = [anova['p']]
+                            features[f'anova_{modality}_best_center_ms'] = center_ms
                             
                             correlation = self.calculate_correlation_for_window(unit_idx, modality, start_idx, end_idx)
-                            features[f'correlation_{modality_name}_r'] = [correlation['r']]
-                            features[f'correlation_{modality_name}_p'] = [correlation['p']]
-                            features[f'correlation_{modality_name}_best_center_ms'] = center_ms
+                            features[f'correlation_{modality}_r'] = [correlation['r']]
+                            features[f'correlation_{modality}_p'] = [correlation['p']]
+                            features[f'correlation_{modality}_best_center_ms'] = center_ms
                     
                     self.unit_features.append(features)
                     
@@ -969,13 +1392,14 @@ class NeuralFeatureAnalyzer:
                         print(f"    Error analyzing unit {unit_idx}: {e}")
                     continue
             
-            print(f"Successfully analyzed {len(self.unit_features)} units")
+            print(f"\nSuccessfully analyzed {len(self.unit_features)} units")
             
         except Exception as e:
             print(f"Error in analyze_all_units: {e}")
+            import traceback
+            traceback.print_exc()
 
     def get_features_dataframe(self):
-        # Return features as pandas DataFrame
         df = pd.DataFrame(self.unit_features)
         
         for col in df.columns:
@@ -986,7 +1410,6 @@ class NeuralFeatureAnalyzer:
         return df
 
     def save_features(self, filename=None, save_dir=None):
-        # Save features to CSV
         if save_dir is None:
             if self.is_tuning:
                 save_dir = r'D:\Neural-Pipeline\results\analysis_single_neurons\dots3DMPtuning_neuralfeatures'
